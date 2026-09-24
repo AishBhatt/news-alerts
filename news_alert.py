@@ -19,16 +19,23 @@ FEEDS = {
     "World": [
         ("BBC World", "https://feeds.bbci.co.uk/news/world/rss.xml"),
         ("Al Jazeera", "https://www.aljazeera.com/xml/rss/all.xml"),
+        ("Reuters World", "https://www.reutersagency.com/feed/?best-topics=world&post_type=best"),
     ],
     "Tech": [
         ("TechCrunch", "https://techcrunch.com/feed/"),
         ("The Verge", "https://www.theverge.com/rss/index.xml"),
+        ("Ars Technica", "https://feeds.arstechnica.com/arstechnica/index"),
+        ("Wired", "https://www.wired.com/feed/rss"),
     ],
     "Business": [
         ("CNBC", "https://www.cnbc.com/id/100003114/device/rss/rss.html"),
+        ("Reuters Business", "https://www.reutersagency.com/feed/?best-topics=business-finance&post_type=best"),
+        ("Financial Times", "https://www.ft.com/rss/home"),
     ],
     "Entertainment": [
         ("Variety", "https://variety.com/feed/"),
+        ("Hollywood Reporter", "https://www.hollywoodreporter.com/feed/"),
+        ("Entertainment Weekly", "https://ew.com/feed/"),
     ],
 }
 
