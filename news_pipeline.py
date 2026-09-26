@@ -139,10 +139,6 @@ def rewrite_with_claude(article_text, original_title):
         "Respond ONLY with valid JSON, no markdown fences, in this exact shape:\n"
         '{"headline": "...", "body_text": "plain text, no HTML tags, paragraphs separated by newlines"}'
     )
-    system_prompt = (
-        ...
-        '{"headline": "...", "body_text": "plain text, no HTML tags, paragraphs separated by newlines"}'
-    )
 
     user_content = (
         f"Original title (for reference only): {original_title}\n\n"
