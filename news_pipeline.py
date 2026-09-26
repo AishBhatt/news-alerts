@@ -25,6 +25,13 @@ Env vars optional:
   LANGUAGETOOL_URL        - defaults to the free public LanguageTool API endpoint
   PLAGIARISM_THRESHOLD_PCT - max acceptable matched-word %, default 15
   MAX_GRAMMAR_ISSUES      - max acceptable grammar issues before flagging, default 3
+  CHECKS_ENABLED          - "true" (default) or "false". Set to "false" to skip
+                             grammar/plagiarism checks entirely and post every
+                             Claude draft straight to WordPress as a draft, so
+                             you can review writing quality first. COPYSCAPE_*
+                             are not required when this is "false".
+  MAX_ARTICLES_OVERRIDE   - overrides MAX_ARTICLES_PER_RUN below, e.g. "1" to
+                             test with a single article at a time.
 
 State: seen_articles.json tracks processed URLs, committed back to the repo.
 """
@@ -49,6 +56,8 @@ SLACK_WEBHOOK_URL = os.environ.get("SLACK_WEBHOOK_URL")
 LANGUAGETOOL_URL = os.environ.get("LANGUAGETOOL_URL", "https://api.languagetool.org/v2/check")
 PLAGIARISM_THRESHOLD_PCT = float(os.environ.get("PLAGIARISM_THRESHOLD_PCT", "15"))
 MAX_GRAMMAR_ISSUES = int(os.environ.get("MAX_GRAMMAR_ISSUES", "3"))
+_checks_env_raw = os.environ.get("CHECKS_ENABLED", "true")
+CHECKS_ENABLED = _checks_env_raw.strip().lower() != "false"
 
 STATE_FILE = "seen_articles.json"
 
@@ -63,7 +72,7 @@ CLAUDE_MODEL = "claude-sonnet-4-6"
 CLAUDE_URL = "https://api.anthropic.com/v1/messages"
 COPYSCAPE_URL = "https://www.copyscape.com/api/"
 
-MAX_ARTICLES_PER_RUN = 5
+MAX_ARTICLES_PER_RUN = int(os.environ.get("MAX_ARTICLES_OVERRIDE", "5"))
 
 
 # ---- State helpers ----
@@ -255,21 +264,31 @@ def notify_slack(message):
 # ---- Main ----
 
 def main():
-    missing = [
-        name
-        for name, val in [
-            ("ANTHROPIC_API_KEY", ANTHROPIC_API_KEY),
-            ("WP_URL", WP_URL),
-            ("WP_USERNAME", WP_USERNAME),
-            ("WP_APP_PASSWORD", WP_APP_PASSWORD),
+    print(f"DEBUG: raw CHECKS_ENABLED env value = {_checks_env_raw!r} -> parsed as CHECKS_ENABLED={CHECKS_ENABLED}")
+
+    if os.environ.get("DRY_RUN_CONFIG_ONLY", "").strip().lower() == "true":
+        print("DRY_RUN_CONFIG_ONLY=true -- stopping here before any API calls. Config check only.")
+        return
+
+    required = [
+        ("ANTHROPIC_API_KEY", ANTHROPIC_API_KEY),
+        ("WP_URL", WP_URL),
+        ("WP_USERNAME", WP_USERNAME),
+        ("WP_APP_PASSWORD", WP_APP_PASSWORD),
+    ]
+    if CHECKS_ENABLED:
+        required += [
             ("COPYSCAPE_USERNAME", COPYSCAPE_USERNAME),
             ("COPYSCAPE_API_KEY", COPYSCAPE_API_KEY),
         ]
-        if not val
-    ]
+    missing = [name for name, val in required if not val]
     if missing:
         print(f"Missing required env vars: {', '.join(missing)}", file=sys.stderr)
         sys.exit(1)
+
+    if not CHECKS_ENABLED:
+        print("CHECKS_ENABLED=false -- grammar and plagiarism checks are BYPASSED this run.")
+        print("Every Claude draft will post straight to WordPress for you to review manually.")
 
     seen = load_seen()
     new_links = get_new_entries(seen)[:MAX_ARTICLES_PER_RUN]
@@ -298,18 +317,26 @@ def main():
                 seen.add(url)
                 continue
 
-            issue_count, grammar_notes = check_grammar(body_text)
-            match_pct, matched_urls = check_plagiarism(body_text)
+            if CHECKS_ENABLED:
+                issue_count, grammar_notes = check_grammar(body_text)
+                match_pct, matched_urls = check_plagiarism(body_text)
+                grammar_ok = issue_count <= MAX_GRAMMAR_ISSUES
+                plagiarism_ok = match_pct <= PLAGIARISM_THRESHOLD_PCT
+            else:
+                issue_count, match_pct = 0, 0.0
+                grammar_ok, plagiarism_ok = True, True
 
-            grammar_ok = issue_count <= MAX_GRAMMAR_ISSUES
-            plagiarism_ok = match_pct <= PLAGIARISM_THRESHOLD_PCT
+            # Always print the full draft text to the log, so you can read
+            # exactly what Claude wrote even when checks are on and it gets skipped.
+            print(f"  --- DRAFT TEXT ---\n  Headline: {headline}\n  {body_text}\n  --- END DRAFT ---")
 
             if grammar_ok and plagiarism_ok:
                 wp_post = post_wordpress_draft(headline, body_text, url)
                 edit_link = f"{WP_URL}/wp-admin/post.php?post={wp_post['id']}&action=edit"
+                checks_note = "(checks bypassed)" if not CHECKS_ENABLED else f"Grammar issues: {issue_count} | Plagiarism match: {match_pct:.1f}%"
                 notify_slack(
                     f"📝 New draft ready: *{headline}*\n"
-                    f"Grammar issues: {issue_count} | Plagiarism match: {match_pct:.1f}%\n"
+                    f"{checks_note}\n"
                     f"{edit_link}"
                 )
                 posted += 1
