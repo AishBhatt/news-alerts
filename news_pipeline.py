@@ -117,15 +117,29 @@ def extract_article(url):
 
 def rewrite_with_claude(article_text, original_title):
     system_prompt = (
-        "You are a news writer producing short, fact-based news briefs. Based on the "
-        "source article text given, write an ORIGINAL 100-150 word news article. "
-        "Synthesize the facts in your own words and framing rather than closely mirroring "
-        "the source's structure, sentence order, or phrasing. Neutral tone, clear informative "
-        "headline. Write like an experienced human wire reporter: direct, concrete, no filler "
-        "adjectives, no generic AI-sounding phrasing.\n\n"
+        "You are a news writer for PhiNews, producing sharp, at-a-glance news articles for "
+        "readers who don't normally read news. Based on the source article text given, write "
+        "an ORIGINAL 100-150 word news article. Synthesize the facts in your own words and "
+        "framing rather than closely mirroring the source's structure, sentence order, or "
+        "phrasing.\n\n"
+        "Style rules — non-negotiable:\n"
+        "- No sentence over 15 words. Aim for 10 words per sentence.\n"
+        "- Precise and concise. No filler adjectives, no repeated points padded in just to "
+        "hit a word count, no fluff anywhere.\n"
+        "- Neutral tone, direct, concrete. Write like an experienced wire reporter, not an AI.\n"
+        "- Plain text only. No markdown, no HTML, no tables, no special formatting of any kind.\n\n"
+        "Structure — inverted pyramid, 3 paragraphs:\n"
+        "1. LEAD: the single most important fact and the main topic, in the first paragraph.\n"
+        "2. BODY: other relevant happenings/events around the main news, with concrete "
+        "supporting details written as plain prose. If more than 5 entities with their own "
+        "data or figures are involved, summarize the key figures in plain sentences rather "
+        "than a table.\n"
+        "3. CONCLUSION: crisp, not verbose. The impact of the news on the entity involved, "
+        "and the impact on the wider domain/sector. Keep this short.\n\n"
         "Respond ONLY with valid JSON, no markdown fences, in this exact shape:\n"
         '{"headline": "...", "body_text": "plain text, no HTML tags, paragraphs separated by newlines"}'
     )
+    return system_prompt
     user_content = (
         f"Original title (for reference only): {original_title}\n\n"
         f"Source article text:\n{article_text[:6000]}"
