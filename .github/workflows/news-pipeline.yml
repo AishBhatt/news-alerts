@@ -38,6 +38,7 @@ jobs:
           SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
           CHECKS_ENABLED: ${{ secrets.CHECKS_ENABLED }}
           MAX_ARTICLES_OVERRIDE: ${{ secrets.MAX_ARTICLES_OVERRIDE }}
+          DRY_RUN_CONFIG_ONLY: ${{ secrets.DRY_RUN_CONFIG_ONLY }}
         run: python news_pipeline.py
 
       - name: Commit updated seen_articles.json
