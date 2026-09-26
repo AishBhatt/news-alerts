@@ -339,6 +339,7 @@ def main():
             else:
                 issue_count, match_pct = 0, 0.0
                 grammar_ok, plagiarism_ok = True, True
+                grammar_notes = []
 
             # Always print the full draft text to the log, so you can read
             # exactly what Claude wrote even when checks are on and it gets skipped.
@@ -357,7 +358,7 @@ def main():
                 print(f"  Posted as draft (grammar: {issue_count} issues, plagiarism: {match_pct:.1f}%)")
             else:
                 reasons = []
-if not grammar_ok:
+                if not grammar_ok:
                     grammar_detail = "; ".join(grammar_notes[:3]) if grammar_notes else "Unknown grammar issues"
                     reasons.append(f"{issue_count} grammar issues (max {MAX_GRAMMAR_ISSUES}): {grammar_detail}")
                     print(f"  Grammar issues: {grammar_detail}", file=sys.stderr)
