@@ -357,8 +357,7 @@ def main():
                 print(f"  Posted as draft (grammar: {issue_count} issues, plagiarism: {match_pct:.1f}%)")
             else:
                 reasons = []
-if not grammar_ok:                # Format top grammar issues for display
-  
+if not grammar_ok:
                     grammar_detail = "; ".join(grammar_notes[:3]) if grammar_notes else "Unknown grammar issues"
                     reasons.append(f"{issue_count} grammar issues (max {MAX_GRAMMAR_ISSUES}): {grammar_detail}")
                     print(f"  Grammar issues: {grammar_detail}", file=sys.stderr)
