@@ -56,7 +56,8 @@ SLACK_WEBHOOK_URL = os.environ.get("SLACK_WEBHOOK_URL")
 LANGUAGETOOL_URL = os.environ.get("LANGUAGETOOL_URL", "https://api.languagetool.org/v2/check")
 PLAGIARISM_THRESHOLD_PCT = float(os.environ.get("PLAGIARISM_THRESHOLD_PCT", "15"))
 MAX_GRAMMAR_ISSUES = int(os.environ.get("MAX_GRAMMAR_ISSUES", "3"))
-CHECKS_ENABLED = os.environ.get("CHECKS_ENABLED", "true").strip().lower() != "false"
+_checks_env_raw = os.environ.get("CHECKS_ENABLED", "true")
+CHECKS_ENABLED = _checks_env_raw.strip().lower() != "false"
 
 STATE_FILE = "seen_articles.json"
 
@@ -263,6 +264,8 @@ def notify_slack(message):
 # ---- Main ----
 
 def main():
+    print(f"DEBUG: raw CHECKS_ENABLED env value = {_checks_env_raw!r} -> parsed as CHECKS_ENABLED={CHECKS_ENABLED}")
+
     required = [
         ("ANTHROPIC_API_KEY", ANTHROPIC_API_KEY),
         ("WP_URL", WP_URL),
