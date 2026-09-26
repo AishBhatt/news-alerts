@@ -68,7 +68,7 @@ FEEDS = [
     "https://www.theverge.com/rss/index.xml",
 ]
 
-CLAUDE_MODEL = "claude-sonnet-4-6"
+CLAUDE_MODEL = "claude-haiku-4-5-20251001"
 CLAUDE_URL = "https://api.anthropic.com/v1/messages"
 COPYSCAPE_URL = "https://www.copyscape.com/api/"
 
