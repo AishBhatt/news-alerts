@@ -266,6 +266,10 @@ def notify_slack(message):
 def main():
     print(f"DEBUG: raw CHECKS_ENABLED env value = {_checks_env_raw!r} -> parsed as CHECKS_ENABLED={CHECKS_ENABLED}")
 
+    if os.environ.get("DRY_RUN_CONFIG_ONLY", "").strip().lower() == "true":
+        print("DRY_RUN_CONFIG_ONLY=true -- stopping here before any API calls. Config check only.")
+        return
+
     required = [
         ("ANTHROPIC_API_KEY", ANTHROPIC_API_KEY),
         ("WP_URL", WP_URL),
