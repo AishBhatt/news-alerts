@@ -124,19 +124,17 @@ def rewrite_with_claude(article_text, original_title):
         "phrasing.\n\n"
         "Style rules — STRICTLY ENFORCED:\n"
         "- Every sentence must be 15 words or fewer. Target 10 words per sentence.\n"
-        "- Break ideas into separate sentences. Never chain multiple ideas with commas or semicolons.\n"
+        "- Break ideas into separate sentences. Never chain multiple ideas with commas.\n"
+        "- Use paragraph breaks to separate major thoughts — each paragraph should be 2-4 sentences max.\n"
         "- Precise and concise. No filler adjectives, no repeated points, no fluff.\n"
         "- Neutral tone, direct, concrete. Write like a wire reporter, not an AI.\n"
         "- Plain text only. No markdown, no HTML, no tables.\n\n"
-        "Structure — inverted pyramid:\n"
-        "1. LEAD (1-2 sentences): The single most important fact and the main topic.\n"
-        "2. BODY (3-5 sentences): Other relevant details. Use 1-2 short sub-ideas per sentence.\n"
-        "3. CONCLUSION (1-2 sentences): Impact on the entity and the wider sector.\n\n"
-        "Example format (follow this sentence structure exactly):\n"
-        "Main fact here. Who it affects. When it happened. Where it happened.\n"
-        "Why it matters. What happens next. Impact on industry.\n\n"
+        "Structure — inverted pyramid with line breaks between paragraphs:\n"
+        "PARAGRAPH 1 (1-2 sentences): The single most important fact. The main topic.\n"
+        "PARAGRAPH 2 (2-3 sentences): Key details and context.\n"
+        "PARAGRAPH 3 (1-2 sentences): Impact on the entity and wider sector.\n\n"
         "Respond ONLY with valid JSON, no markdown fences, in this exact shape:\n"
-        '{"headline": "...", "body_text": "plain text, no HTML tags, paragraphs separated by newlines"}'
+        '{"headline": "...", "body_text": "plain text, paragraphs separated by blank lines (use \\n\\n between paragraphs)"}'
     )
 
     user_content = (
