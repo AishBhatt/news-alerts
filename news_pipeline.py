@@ -4,9 +4,11 @@ News -> Claude Rewrite -> Grammar Check -> Plagiarism Check -> WordPress Draft.
 Full pipeline:
   1. Pull new article URLs from RSS feeds
   2. Extract article text
-  3. Claude writes an original 100-150 word article
-  4. LanguageTool checks grammar on Claude's output
-  5. Copyscape checks Claude's output against the live web for plagiarism
+  3. Claude writes an original article as labeled fact boxes (What Happened,
+     Where it Happened, Who is Affected, How it Happened, Why it Happened,
+     When it Happened, Key Updates) -- only the boxes it has real info for
+  4. LanguageTool checks grammar on Claude's combined output
+  5. Copyscape checks Claude's combined output against the live web for plagiarism
   6. If grammar is clean AND plagiarism match % is below threshold -> post WordPress draft
      Otherwise -> skip posting, flag it in Slack with the reason (nothing questionable
      reaches WordPress silently)
@@ -34,6 +36,14 @@ Env vars optional:
                              test with a single article at a time.
 
 State: seen_articles.json tracks processed URLs, committed back to the repo.
+
+Published post format: each labeled fact becomes its own bordered "box"
+(a Gutenberg Group block with className "detail-box") on the live site.
+Only boxes with real content are included -- there is no fixed set of boxes
+every article must have. The Source box is always included.
+Matching CSS (.detail-box { border: 1px solid #e5e5e5; border-radius: 8px;
+padding: 1rem 1.25rem; margin-bottom: 1rem; }) must already be pasted into
+Styles > Additional CSS on the WordPress site for these to render boxed.
 """
 
 import os
@@ -41,6 +51,7 @@ import re
 import sys
 import json
 import time
+import html
 import feedparser
 import requests
 from newspaper import Article
@@ -73,6 +84,18 @@ CLAUDE_URL = "https://api.anthropic.com/v1/messages"
 COPYSCAPE_URL = "https://www.copyscape.com/api/"
 
 MAX_ARTICLES_PER_RUN = int(os.environ.get("MAX_ARTICLES_OVERRIDE", "5"))
+
+# Order the boxes appear in on the published page, and the labels shown.
+# "key_updates" is the catch-all for real info that doesn't fit the 5 Ws.
+BOX_ORDER = [
+    ("what_happened", "What Happened"),
+    ("where_it_happened", "Where it Happened"),
+    ("who_is_affected", "Who is Affected"),
+    ("how_it_happened", "How it Happened"),
+    ("why_it_happened", "Why it Happened"),
+    ("when_it_happened", "When it Happened"),
+    ("key_updates", "Key Updates"),
+]
 
 
 # ---- State helpers ----
@@ -119,22 +142,34 @@ def rewrite_with_claude(article_text, original_title):
     system_prompt = (
         "You are a news writer for PhiNews, producing sharp, at-a-glance news articles for "
         "readers who don't normally read news. Based on the source article text given, write "
-        "an ORIGINAL 100-150 word news article. Synthesize the facts in your own words and "
-        "framing rather than closely mirroring the source's structure, sentence order, or "
-        "phrasing.\n\n"
-        "Style rules — STRICTLY ENFORCED:\n"
+        "an ORIGINAL article, in your own words and framing rather than mirroring the source's "
+        "structure, sentence order, or phrasing.\n\n"
+        "Instead of flowing paragraphs, break the article into short labeled fact boxes. The "
+        "possible boxes are: what_happened, where_it_happened, who_is_affected, "
+        "how_it_happened, why_it_happened, when_it_happened, key_updates.\n\n"
+        "CRITICAL RULE: only include a box if the source article actually gives you a real, "
+        "specific fact for it. Do NOT guess, invent, or pad a box with a vague restatement "
+        "just to fill it in. If the source doesn't say where something happened, omit "
+        "where_it_happened entirely -- do not include it as an empty string, and do not include "
+        "it with filler like 'Location not specified.' It is completely normal and expected for "
+        "most articles to use only 2-4 of these boxes, not all of them.\n\n"
+        "what_happened should almost always be present, since it is the core news event. "
+        "key_updates is a catch-all: use it only for a real, important fact that doesn't cleanly "
+        "belong in any of the other boxes (e.g. an official's quote, a related development, next "
+        "steps). If everything already fits into the other boxes, omit key_updates too.\n\n"
+        "Style rules for every box you do include — STRICTLY ENFORCED:\n"
+        "- 1-3 sentences per box.\n"
         "- Every sentence must be 15 words or fewer. Target 10 words per sentence.\n"
-        "- Break ideas into separate sentences. Never chain multiple ideas with commas.\n"
-        "- Use paragraph breaks to separate major thoughts — each paragraph should be 2-4 sentences max.\n"
+        "- Never chain multiple ideas with commas — separate sentences instead.\n"
         "- Precise and concise. No filler adjectives, no repeated points, no fluff.\n"
         "- Neutral tone, direct, concrete. Write like a wire reporter, not an AI.\n"
-        "- Plain text only. No markdown, no HTML, no tables.\n\n"
-        "Structure — inverted pyramid with line breaks between paragraphs:\n"
-        "PARAGRAPH 1 (1-2 sentences): The single most important fact. The main topic.\n"
-        "PARAGRAPH 2 (2-3 sentences): Key details and context.\n"
-        "PARAGRAPH 3 (1-2 sentences): Impact on the entity and wider sector.\n\n"
-        "Respond ONLY with valid JSON, no markdown fences, in this exact shape:\n"
-        '{"headline": "...", "body_text": "plain text, paragraphs separated by blank lines (use \\n\\n between paragraphs)"}'
+        "- Plain text only. No markdown, no HTML, no bullet points.\n\n"
+        "Respond ONLY with valid JSON, no markdown fences. Include the key \"headline\" plus "
+        "ONLY the box keys you actually have real content for, in this shape (example shows "
+        "all keys, but you will normally omit several of them):\n"
+        '{"headline": "...", "what_happened": "...", "where_it_happened": "...", '
+        '"who_is_affected": "...", "how_it_happened": "...", "why_it_happened": "...", '
+        '"when_it_happened": "...", "key_updates": "..."}'
     )
 
     user_content = (
@@ -151,7 +186,7 @@ def rewrite_with_claude(article_text, original_title):
         },
         json={
             "model": CLAUDE_MODEL,
-            "max_tokens": 500,
+            "max_tokens": 700,
             "system": system_prompt,
             "messages": [{"role": "user", "content": user_content}],
         },
@@ -165,9 +200,21 @@ def rewrite_with_claude(article_text, original_title):
     try:
         parsed = json.loads(cleaned)
     except json.JSONDecodeError:
-        parsed = {"headline": original_title, "body_text": cleaned}
+        # Fallback: at least keep the headline and dump everything into
+        # what_happened so nothing is silently lost.
+        parsed = {"headline": original_title, "what_happened": cleaned}
 
     return parsed
+
+
+def combined_text(written):
+    """All box text concatenated, for grammar/plagiarism checking and logging."""
+    parts = []
+    for key, _label in BOX_ORDER:
+        val = (written.get(key) or "").strip()
+        if val:
+            parts.append(val)
+    return " ".join(parts)
 
 
 # ---- Step 4: Grammar check (LanguageTool) ----
@@ -246,10 +293,39 @@ def check_plagiarism(text):
 
 # ---- Step 6: WordPress ----
 
-def post_wordpress_draft(headline, body_text, source_url):
-    paragraphs = [p.strip() for p in body_text.split("\n") if p.strip()]
-    body_html = "".join(f"<p>{p}</p>" for p in paragraphs)
-    body_html += f'<p><em>Source: <a href="{source_url}">{source_url}</a></em></p>'
+def build_box_block(label, text):
+    text_esc = html.escape(text)
+    return (
+        '<!-- wp:group {"className":"detail-box","layout":{"type":"constrained"}} -->\n'
+        f'<div class="wp-block-group detail-box"><!-- wp:paragraph -->\n'
+        f'<p><strong>{html.escape(label)}</strong></p>\n<!-- /wp:paragraph -->\n\n'
+        f'<!-- wp:paragraph -->\n<p>{text_esc}</p>\n<!-- /wp:paragraph --></div>\n<!-- /wp:group -->'
+    )
+
+
+def build_body_html(written, source_url):
+    blocks = []
+    for key, label in BOX_ORDER:
+        text = (written.get(key) or "").strip()
+        if not text:
+            continue
+        blocks.append(build_box_block(label, text))
+
+    # Source box is always included.
+    source_block = (
+        '<!-- wp:group {"className":"detail-box","layout":{"type":"constrained"}} -->\n'
+        '<div class="wp-block-group detail-box"><!-- wp:paragraph -->\n'
+        '<p><strong>Source</strong></p>\n<!-- /wp:paragraph -->\n\n'
+        f'<!-- wp:paragraph -->\n<p><a href="{source_url}">{source_url}</a></p>\n'
+        '<!-- /wp:paragraph --></div>\n<!-- /wp:group -->'
+    )
+    blocks.append(source_block)
+
+    return "\n\n".join(blocks)
+
+
+def post_wordpress_draft(headline, written, source_url):
+    body_html = build_body_html(written, source_url)
 
     resp = requests.post(
         f"{WP_URL}/wp-json/wp/v2/posts",
@@ -321,10 +397,10 @@ def main():
 
             written = rewrite_with_claude(article["text"], article["title"])
             headline = written.get("headline", article["title"])
-            body_text = written.get("body_text", "")
+            body_text = combined_text(written)
 
             if not body_text.strip():
-                print("  Skipping, Claude returned empty body.")
+                print("  Skipping, Claude returned no usable box content.")
                 seen.add(url)
                 continue
 
@@ -338,12 +414,20 @@ def main():
                 grammar_ok, plagiarism_ok = True, True
                 grammar_notes = []
 
-            # Always print the full draft text to the log, so you can read
-            # exactly what Claude wrote even when checks are on and it gets skipped.
-            print(f"  --- DRAFT TEXT ---\n  Headline: {headline}\n  {body_text}\n  --- END DRAFT ---")
+            # Log exactly which boxes Claude filled in, and what they say.
+            box_log_lines = []
+            for key, label in BOX_ORDER:
+                val = (written.get(key) or "").strip()
+                if val:
+                    box_log_lines.append(f"    [{label}] {val}")
+            print(
+                f"  --- DRAFT ---\n  Headline: {headline}\n"
+                + "\n".join(box_log_lines)
+                + "\n  --- END DRAFT ---"
+            )
 
             if grammar_ok and plagiarism_ok:
-                wp_post = post_wordpress_draft(headline, body_text, url)
+                wp_post = post_wordpress_draft(headline, written, url)
                 edit_link = f"{WP_URL}/wp-admin/post.php?post={wp_post['id']}&action=edit"
                 checks_note = "(checks bypassed)" if not CHECKS_ENABLED else f"Grammar issues: {issue_count} | Plagiarism match: {match_pct:.1f}%"
                 notify_slack(
