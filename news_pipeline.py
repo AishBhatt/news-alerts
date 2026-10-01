@@ -53,6 +53,8 @@ import sys
 import json
 import time
 import html
+import random
+from itertools import zip_longest
 from urllib.parse import urlparse
 import feedparser
 import requests
@@ -75,17 +77,34 @@ CHECKS_ENABLED = _checks_env_raw.strip().lower() != "false"
 STATE_FILE = "seen_articles.json"
 
 FEEDS = [
-    "http://feeds.bbci.co.uk/news/world/rss.xml",
+    # --- World news ---
+    "https://feeds.bbci.co.uk/news/world/rss.xml",
     "https://www.aljazeera.com/xml/rss/all.xml",
+    "https://www.theguardian.com/world/rss",
+    # --- India ---
+    "https://www.thehindu.com/news/national/feeder/default.rss",
+    "https://indianexpress.com/section/india/feed/",
+    # --- Business ---
+    "https://indianexpress.com/section/business/feed/",
+    "https://feeds.bbci.co.uk/news/business/rss.xml",
+    # --- Sports ---
+    "https://www.theguardian.com/sport/rss",
+    # --- Science ---
+    "https://www.theguardian.com/science/rss",
+    # --- Lifestyle ---
+    "https://indianexpress.com/section/lifestyle/feed/",
+    # --- Tech ---
     "https://techcrunch.com/feed/",
     "https://www.theverge.com/rss/index.xml",
+    # --- Entertainment ---
+    "https://feeds.bbci.co.uk/news/entertainment_and_arts/rss.xml",
 ]
 
 CLAUDE_MODEL = "claude-haiku-4-5-20251001"
 CLAUDE_URL = "https://api.anthropic.com/v1/messages"
 COPYSCAPE_URL = "https://www.copyscape.com/api/"
 
-MAX_ARTICLES_PER_RUN = int(os.environ.get("MAX_ARTICLES_OVERRIDE", "1"))
+MAX_ARTICLES_PER_RUN = int(os.environ.get("MAX_ARTICLES_OVERRIDE", "5"))
 
 # Order the boxes appear in on the published page, and the labels shown.
 # "key_updates" is the catch-all for real info that doesn't fit the 5 Ws.
@@ -117,18 +136,33 @@ def save_seen(seen):
 # ---- Step 1-2: RSS + extraction ----
 
 def get_new_entries(seen):
-    new_entries = []
+    """
+    Collect unseen links per feed, shuffle the feed order each run, then
+    interleave (1st from each feed, then 2nd from each, ...). With
+    MAX_ARTICLES_OVERRIDE=1 this means each run picks the newest unseen
+    article from a random feed, instead of always draining the first feed.
+    A dead or empty feed just contributes nothing and does not break the run.
+    """
+    per_feed = []
     for feed_url in FEEDS:
         try:
             parsed = feedparser.parse(feed_url)
         except Exception as e:
             print(f"  Feed error ({feed_url}): {e}", file=sys.stderr)
             continue
+        links = []
         for entry in parsed.entries:
             link = entry.get("link")
-            if link and link not in seen:
-                new_entries.append(link)
-    return new_entries
+            if link and link not in seen and link not in links:
+                links.append(link)
+        if links:
+            per_feed.append(links)
+
+    random.shuffle(per_feed)
+    interleaved = []
+    for group in zip_longest(*per_feed):
+        interleaved.extend(link for link in group if link)
+    return interleaved
 
 
 def extract_article(url):
@@ -309,6 +343,11 @@ SOURCE_NAMES = {
     "reuters.com": "Reuters",
     "nytimes.com": "The New York Times",
     "theguardian.com": "The Guardian",
+    "dw.com": "DW",
+    "thehindu.com": "The Hindu",
+    "indianexpress.com": "The Indian Express",
+    "hollywoodreporter.com": "The Hollywood Reporter",
+    "deadline.com": "Deadline",
 }
 
 
