@@ -40,7 +40,8 @@ State: seen_articles.json tracks processed URLs, committed back to the repo.
 Published post format: each labeled fact becomes its own bordered "box"
 (a Gutenberg Group block with className "detail-box") on the live site.
 Only boxes with real content are included -- there is no fixed set of boxes
-every article must have. The Source box is always included.
+every article must have. The Source box is always included, and shows the
+source site's name (e.g. "BBC News") hyperlinked to the full article URL.
 Matching CSS (.detail-box { border: 1px solid #e5e5e5; border-radius: 8px;
 padding: 1rem 1.25rem; margin-bottom: 1rem; }) must already be pasted into
 Styles > Additional CSS on the WordPress site for these to render boxed.
@@ -52,6 +53,7 @@ import sys
 import json
 import time
 import html
+from urllib.parse import urlparse
 import feedparser
 import requests
 from newspaper import Article
@@ -293,6 +295,48 @@ def check_plagiarism(text):
 
 # ---- Step 6: WordPress ----
 
+# Known sites -> display name. Any site not listed here gets a name worked
+# out automatically from its domain (e.g. news.sky.com -> "Sky").
+# To set an exact name for another site, add one line here.
+SOURCE_NAMES = {
+    "bbc.com": "BBC News",
+    "bbc.co.uk": "BBC News",
+    "aljazeera.com": "Al Jazeera",
+    "techcrunch.com": "TechCrunch",
+    "theverge.com": "The Verge",
+    "cnbc.com": "CNBC",
+    "variety.com": "Variety",
+    "reuters.com": "Reuters",
+    "nytimes.com": "The New York Times",
+    "theguardian.com": "The Guardian",
+}
+
+
+def source_name(url):
+    host = urlparse(url).netloc.lower()
+    if host.startswith("www."):
+        host = host[4:]
+    for domain, name in SOURCE_NAMES.items():
+        if host == domain or host.endswith("." + domain):
+            return name
+    parts = host.split(".")
+    if len(parts) >= 3 and parts[-2] in ("co", "com", "org", "net", "gov"):
+        base = parts[-3]
+    elif len(parts) >= 2:
+        base = parts[-2]
+    else:
+        base = host
+    return base.replace("-", " ").title()
+
+
+def source_link_html(url):
+    return (
+        f'<a href="{html.escape(url, quote=True)}" '
+        f'target="_blank" rel="noopener noreferrer">'
+        f'{html.escape(source_name(url))}</a>'
+    )
+
+
 def build_box_block(label, text):
     text_esc = html.escape(text)
     return (
@@ -316,7 +360,7 @@ def build_body_html(written, source_url):
         '<!-- wp:group {"className":"detail-box","layout":{"type":"constrained"}} -->\n'
         '<div class="wp-block-group detail-box"><!-- wp:paragraph -->\n'
         '<p><strong>Source</strong></p>\n<!-- /wp:paragraph -->\n\n'
-        f'<!-- wp:paragraph -->\n<p><a href="{source_url}">{source_url}</a></p>\n'
+        f'<!-- wp:paragraph -->\n<p>{source_link_html(source_url)}</p>\n'
         '<!-- /wp:paragraph --></div>\n<!-- /wp:group -->'
     )
     blocks.append(source_block)
