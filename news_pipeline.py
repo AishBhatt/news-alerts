@@ -85,7 +85,7 @@ CLAUDE_MODEL = "claude-haiku-4-5-20251001"
 CLAUDE_URL = "https://api.anthropic.com/v1/messages"
 COPYSCAPE_URL = "https://www.copyscape.com/api/"
 
-MAX_ARTICLES_PER_RUN = int(os.environ.get("MAX_ARTICLES_OVERRIDE", "5"))
+MAX_ARTICLES_PER_RUN = int(os.environ.get("MAX_ARTICLES_OVERRIDE", "1"))
 
 # Order the boxes appear in on the published page, and the labels shown.
 # "key_updates" is the catch-all for real info that doesn't fit the 5 Ws.
