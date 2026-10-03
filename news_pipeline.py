@@ -674,20 +674,6 @@ def get_category_id(slug):
     return cat_id
 
 
-def story_meta_html(category):
-    """Small 'Category · Month D, YYYY' line rendered under the headline."""
-    import datetime
-    parts = []
-    if category:
-        parts.append(html.escape(category.replace("-", " ").title()))
-    parts.append(datetime.datetime.now().strftime("%B %-d, %Y"))
-    text = html.escape(" · ".join(parts))
-    return (
-        '<!-- wp:paragraph {"className":"story-meta"} -->\n'
-        f'<p class="story-meta">{text}</p>\n<!-- /wp:paragraph -->'
-    )
-
-
 def latest_stories_html():
     """'Latest stories' box: links to the 3 most recent published posts."""
     try:
@@ -718,11 +704,7 @@ def latest_stories_html():
 
 
 def post_wordpress_draft(headline, written, source_url, category=None):
-    body_html = (
-        story_meta_html(category)
-        + "\n\n"
-        + build_body_html(written, source_url)
-    )
+    body_html = build_body_html(written, source_url)
     latest = latest_stories_html()
     if latest:
         body_html += "\n\n" + latest
