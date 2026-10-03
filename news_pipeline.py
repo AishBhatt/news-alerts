@@ -328,11 +328,6 @@ def main():
             url = entry.get("link", "").strip()
             if not url or url in seen:
                 continue
-            # Skip video URLs
-            if "/video/" in url:
-                print(f"Skipping video URL: {url}")
-                seen.append(url)
-                continue
             
             print(f"Processing: {url}")
             
@@ -386,8 +381,20 @@ Output ONLY the article text or fact boxes. No preamble, no markdown formatting.
                 seen.append(url)
                 continue
             
-            # Extract headline from first line
-            headline = written.split("\n")[0].strip()
+            # Extract headline: first sentence that ends with period (or first line if no period)
+            lines = written.split("\n")
+            headline = ""
+            for line in lines:
+                line = line.strip()
+                if line and not line.startswith("*"):  # Skip bullets
+                    headline = line
+                    if "." in line:
+                        headline = line.split(".")[0] + "."
+                    break
+            
+            if not headline:
+                headline = lines[0].strip() if lines else "News Update"
+            
             if len(headline) > 100:
                 headline = headline[:97] + "..."
             
@@ -432,30 +439,8 @@ Output ONLY the article text or fact boxes. No preamble, no markdown formatting.
                     seen.append(url)
                     continue
             
-            # Build Gutenberg blocks from fact boxes
-            blocks = []
-            for line in written.split("\n"):
-                line = line.strip()
-                if line.endswith(":") and line[0].isupper():  # Fact box label
-                    label = line[:-1]
-                    box_text = ""
-                    # Collect following lines until next label or end
-                    idx = written.split("\n").index(line)
-                    for next_line in written.split("\n")[idx+1:]:
-                        next_line_stripped = next_line.strip()
-                        if next_line_stripped.endswith(":") and next_line_stripped[0].isupper():
-                            break
-                        if next_line_stripped:
-                            box_text += next_line_stripped + " "
-                    
-                    if box_text.strip():
-                        block = build_box_block(label, box_text.strip())
-                        if block:
-                            blocks.append(block)
-            
-            if not blocks:
-                # No fact boxes detected; wrap entire text
-                blocks = [build_box_block("Article", written)]
+            # Wrap entire Claude output in Article box (simple, reliable)
+            blocks = [build_box_block("Article", written)]
             
             # Post to WordPress
             post_id, post_link = post_to_wordpress(headline, blocks, url, source_name)
