@@ -236,7 +236,7 @@ def rewrite_with_claude(article_text, original_title):
         "steps). If everything already fits into the other boxes, omit key_updates too.\n\n"
         "FORMATTING RULES — STRICTLY ENFORCED:\n"
         "- If a box has 1 sentence: write it as plain text (no bullets).\n"
-        "- If a box has 2+ points/facts: format as a bullet list. Each bullet is ONE sentence, 15 words or fewer.\n"
+        "- If a box has 2+ points/facts: format as a bullet list. Each bullet is ONE sentence, 12 words or fewer.\n"
         "- Bullets use this format: put each bullet on a new line starting with '* ' (asterisk space).\n"
         "- Every sentence (bullet or plain) must be 12 words or fewer. Target 10 words per sentence.\n"
         "- HARD LIMIT: no sentence may exceed 12 words. If a thought needs more words, split it into 2-3 separate short sentences or bullets. One idea per sentence.\n"
