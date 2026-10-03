@@ -328,6 +328,11 @@ def main():
             url = entry.get("link", "").strip()
             if not url or url in seen:
                 continue
+            # Skip video URLs
+            if "/video/" in url:
+                print(f"Skipping video URL: {url}")
+                seen.append(url)
+                continue
             
             print(f"Processing: {url}")
             
