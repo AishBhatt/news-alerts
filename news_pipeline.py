@@ -54,6 +54,7 @@ import json
 import time
 import html
 import random
+from datetime import datetime
 from itertools import zip_longest
 from urllib.parse import urlparse
 import feedparser
@@ -674,40 +675,160 @@ def get_category_id(slug):
     return cat_id
 
 
-def latest_stories_html():
-    """'Latest stories' box: links to the 3 most recent published posts."""
+def _fetch_recent_posts(per_page=50):
+    """Recent published posts with fields needed for rail/similarity work."""
+    resp = requests.get(
+        f"{WP_URL}/wp-json/wp/v2/posts",
+        params={
+            "per_page": per_page,
+            "status": "publish",
+            "_fields": "id,link,title,date,content,categories",
+        },
+        timeout=30,
+    )
+    resp.raise_for_status()
+    return resp.json()
+
+
+def _category_name_map(ids):
+    """Category ID -> name for a set of IDs."""
+    names = {}
+    if not ids:
+        return names
     try:
         resp = requests.get(
-            f"{WP_URL}/wp-json/wp/v2/posts",
-            params={"per_page": 4, "status": "publish", "_fields": "link,title"},
+            f"{WP_URL}/wp-json/wp/v2/categories",
+            params={"include": ",".join(str(i) for i in ids), "per_page": 100},
             timeout=15,
         )
         resp.raise_for_status()
-        posts = resp.json()[:3]
-    except Exception as e:
-        print(f"  Latest stories lookup failed, skipping box: {e}")
-        return ""
-    if not posts:
-        return ""
-    items = "\n".join(
-        f'<li><a href="{html.escape(p["link"], quote=True)}">'
-        f'{html.escape(p["title"]["rendered"])}</a></li>'
-        for p in posts
-    )
+        names = {c["id"]: c["name"] for c in resp.json()}
+    except Exception:
+        pass
+    return names
+
+
+def _post_plain_text(post):
+    """Title + tag-free content text for token similarity."""
+    title = post.get("title", {}).get("rendered", "")
+    content = re.sub(r"<[^>]+>", " ", post.get("content", {}).get("rendered", ""))
+    return f"{title} {content}"
+
+
+# A post counts as "related" to the new story on the same token-overlap
+# rule the dedup uses; dupes are already blocked upstream, so anything
+# matching here is a genuine earlier chapter of the story.
+def _related_posts(posts, new_tokens, source_url):
+    related = []
+    for p in posts:
+        if source_url in p.get("content", {}).get("rendered", ""):
+            continue
+        old_tokens = _content_tokens(_post_plain_text(p))
+        shared = new_tokens & old_tokens
+        containment = len(shared) / len(new_tokens) if new_tokens else 0
+        if (len(shared) >= DUP_MIN_SHARED_TOKENS
+                and containment >= DUP_MIN_CONTAINMENT):
+            related.append((len(shared), p))
+    related.sort(key=lambda t: t[0], reverse=True)
+    return [p for _s, p in related]
+
+
+def _rail_card_html(post, cat_names):
+    link = html.escape(post.get("link", ""), quote=True)
+    title = html.escape(post.get("title", {}).get("rendered", "").strip())
+    cats = post.get("categories") or []
+    cat = cat_names.get(cats[0], "") if cats else ""
+    date = ""
+    try:
+        date = datetime.fromisoformat(
+            post.get("date", "").replace("Z", "+00:00")).strftime("%b %-d, %Y").upper()
+    except Exception:
+        pass
+    meta = " · ".join(x for x in (cat.upper(), date) if x)
     return (
-        '<!-- wp:group {"className":"detail-box","layout":{"type":"constrained"}} -->\n'
-        '<div class="wp-block-group detail-box"><!-- wp:paragraph -->\n'
-        '<p><strong>Latest stories</strong></p>\n<!-- /wp:paragraph -->\n\n'
-        f'<!-- wp:list -->\n<ul>\n{items}\n</ul>\n<!-- /wp:list -->'
-        '\n</div>\n<!-- /wp:group -->'
+        '<!-- wp:group {"className":"rail-card","layout":{"type":"constrained"}} -->\n'
+        '<div class="wp-block-group rail-card">'
+        f'<!-- wp:paragraph --><p class="rail-title"><a href="{link}">{title}</a></p><!-- /wp:paragraph -->\n'
+        f'<!-- wp:paragraph --><p class="rail-meta">{html.escape(meta)}</p><!-- /wp:paragraph -->'
+        '</div>\n<!-- /wp:group -->'
+    )
+
+
+def side_rail_html(headline, body_text, detail_box_count, category, source_url):
+    """
+    Right rail: related stories first (same-story-token match), topped up
+    with latest posts from this category. 2 cards for short stories
+    (<5 detail boxes), 3 for longer ones, so the rail never outruns
+    the article. Empty string when there is nothing to show.
+    """
+    try:
+        posts = _fetch_recent_posts()
+    except Exception as e:
+        print(f"  Rail lookup failed, skipping rail: {e}")
+        return ""
+
+    n_cards = 3 if detail_box_count >= 5 else 2
+    new_tokens = _content_tokens(f"{headline} {body_text}")
+    related = _related_posts(posts, new_tokens, source_url)
+
+    cat_id = get_category_id(category) if category else None
+    picked, seen_ids = [], set()
+    for p in related:
+        picked.append(p)
+        seen_ids.add(p["id"])
+        if len(picked) >= n_cards:
+            break
+    if len(picked) < n_cards and cat_id:
+        for p in posts:
+            if p["id"] in seen_ids or cat_id not in (p.get("categories") or []):
+                continue
+            if source_url in p.get("content", {}).get("rendered", ""):
+                continue
+            picked.append(p)
+            seen_ids.add(p["id"])
+            if len(picked) >= n_cards:
+                break
+    if not picked:
+        return ""
+
+    cat_ids = {c for p in picked for c in (p.get("categories") or [])}
+    cat_names = _category_name_map(cat_ids)
+    heading = "Related" if related else (
+        f"More in {html.escape(category.replace('-', ' ').title())}"
+        if category else "More stories")
+
+    cards = "\n".join(_rail_card_html(p, cat_names) for p in picked)
+    return (
+        '<!-- wp:group {"className":"rail","layout":{"type":"constrained"}} -->\n'
+        '<div class="wp-block-group rail">'
+        f'<!-- wp:paragraph --><p class="rail-heading"><strong>{heading}</strong></p><!-- /wp:paragraph -->\n'
+        f'{cards}\n</div>\n<!-- /wp:group -->'
+    )
+
+
+def wrap_with_rail(body_html, rail_html):
+    """Two-column page: story left (~68%), rail right (~32%)."""
+    if not rail_html:
+        return body_html
+    return (
+        '<!-- wp:columns -->\n<div class="wp-block-columns">'
+        '<!-- wp:column {"width":"68%"} -->\n'
+        '<div class="wp-block-column" style="flex-basis:68%">'
+        f'{body_html}'
+        '</div>\n<!-- /wp:column -->\n\n'
+        '<!-- wp:column {"width":"32%"} -->\n'
+        '<div class="wp-block-column" style="flex-basis:32%">'
+        f'{rail_html}'
+        '</div>\n<!-- /wp:column --></div>\n<!-- /wp:columns -->'
     )
 
 
 def post_wordpress_draft(headline, written, source_url, category=None):
     body_html = build_body_html(written, source_url)
-    latest = latest_stories_html()
-    if latest:
-        body_html += "\n\n" + latest
+    body_text = combined_text(written)
+    n_boxes = body_html.count('class="wp-block-group detail-box"')
+    rail = side_rail_html(headline, body_text, n_boxes, category, source_url)
+    body_html = wrap_with_rail(body_html, rail)
 
     payload = {
         "title": headline,
