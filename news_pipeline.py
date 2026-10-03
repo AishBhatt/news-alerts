@@ -735,7 +735,8 @@ def _related_posts(posts, new_tokens, source_url):
 
 def _rail_card_html(post, cat_names):
     link = html.escape(post.get("link", ""), quote=True)
-    title = html.escape(post.get("title", {}).get("rendered", "").strip())
+    title = html.escape(
+        html.unescape(post.get("title", {}).get("rendered", "").strip()))
     cats = post.get("categories") or []
     cat = cat_names.get(cats[0], "") if cats else ""
     date = ""
