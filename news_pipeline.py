@@ -54,6 +54,7 @@ import json
 import time
 import html
 import random
+from datetime import datetime
 from itertools import zip_longest
 from urllib.parse import urlparse
 import feedparser
@@ -674,40 +675,215 @@ def get_category_id(slug):
     return cat_id
 
 
-def latest_stories_html():
-    """'Latest stories' box: links to the 3 most recent published posts."""
+def _fetch_recent_posts(per_page=50):
+    """Recent published posts with fields needed for rail/similarity work."""
+    resp = requests.get(
+        f"{WP_URL}/wp-json/wp/v2/posts",
+        params={
+            "per_page": per_page,
+            "status": "publish",
+            "_fields": "id,link,title,date,content,categories",
+        },
+        timeout=30,
+    )
+    resp.raise_for_status()
+    return resp.json()
+
+
+def _category_name_map(ids):
+    """Category ID -> name for a set of IDs."""
+    names = {}
+    if not ids:
+        return names
     try:
         resp = requests.get(
-            f"{WP_URL}/wp-json/wp/v2/posts",
-            params={"per_page": 4, "status": "publish", "_fields": "link,title"},
+            f"{WP_URL}/wp-json/wp/v2/categories",
+            params={"include": ",".join(str(i) for i in ids), "per_page": 100},
             timeout=15,
         )
         resp.raise_for_status()
-        posts = resp.json()[:3]
-    except Exception as e:
-        print(f"  Latest stories lookup failed, skipping box: {e}")
-        return ""
-    if not posts:
-        return ""
-    items = "\n".join(
-        f'<li><a href="{html.escape(p["link"], quote=True)}">'
-        f'{html.escape(p["title"]["rendered"])}</a></li>'
-        for p in posts
-    )
+        names = {c["id"]: c["name"] for c in resp.json()}
+    except Exception:
+        pass
+    return names
+
+
+def _post_plain_text(post):
+    """Title + tag-free content text for token similarity."""
+    title = post.get("title", {}).get("rendered", "")
+    content = re.sub(r"<[^>]+>", " ", post.get("content", {}).get("rendered", ""))
+    return f"{title} {content}"
+
+
+# A post counts as "related" to the new story on the same token-overlap
+# rule the dedup uses; dupes are already blocked upstream, so anything
+# matching here is a genuine earlier chapter of the story.
+def _related_posts(posts, new_tokens, source_url):
+    related = []
+    for p in posts:
+        if source_url in p.get("content", {}).get("rendered", ""):
+            continue
+        old_tokens = _content_tokens(_post_plain_text(p))
+        shared = new_tokens & old_tokens
+        containment = len(shared) / len(new_tokens) if new_tokens else 0
+        if (len(shared) >= DUP_MIN_SHARED_TOKENS
+                and containment >= DUP_MIN_CONTAINMENT):
+            related.append((len(shared), p))
+    related.sort(key=lambda t: t[0], reverse=True)
+    return [p for _s, p in related]
+
+
+def _rail_card_html(post, cat_names):
+    link = html.escape(post.get("link", ""), quote=True)
+    title = html.escape(
+        html.unescape(post.get("title", {}).get("rendered", "").strip()))
+    cats = post.get("categories") or []
+    cat = cat_names.get(cats[0], "") if cats else ""
+    date = ""
+    try:
+        date = datetime.fromisoformat(
+            post.get("date", "").replace("Z", "+00:00")).strftime("%b %-d, %Y").upper()
+    except Exception:
+        pass
+    meta = " · ".join(x for x in (cat.upper(), date) if x)
     return (
-        '<!-- wp:group {"className":"detail-box","layout":{"type":"constrained"}} -->\n'
-        '<div class="wp-block-group detail-box"><!-- wp:paragraph -->\n'
-        '<p><strong>Latest stories</strong></p>\n<!-- /wp:paragraph -->\n\n'
-        f'<!-- wp:list -->\n<ul>\n{items}\n</ul>\n<!-- /wp:list -->'
-        '\n</div>\n<!-- /wp:group -->'
+        '<!-- wp:group {"className":"rail-card","layout":{"type":"constrained"}} -->\n'
+        '<div class="wp-block-group rail-card">'
+        f'<!-- wp:paragraph --><p class="rail-title"><a href="{link}">{title}</a></p><!-- /wp:paragraph -->\n'
+        f'<!-- wp:paragraph --><p class="rail-meta">{html.escape(meta)}</p><!-- /wp:paragraph -->'
+        '</div>\n<!-- /wp:group -->'
     )
+
+
+def side_rail_html(headline, body_text, detail_box_count, category, source_url):
+    """
+    Right rail: up to 3 related stories (same-story-token match) under a
+    "Related" heading, then "More in {desk}" cards filling the remaining
+    slots. Total cards tracks the story's box count (2-6) so the rail
+    ends roughly level with the article. Empty string when there is
+    nothing to show.
+    """
+    try:
+        posts = _fetch_recent_posts()
+    except Exception as e:
+        print(f"  Rail lookup failed, skipping rail: {e}")
+        return ""
+
+    n_cards = min(6, max(2, detail_box_count))
+    new_tokens = _content_tokens(f"{headline} {body_text}")
+    related = _related_posts(posts, new_tokens, source_url)
+
+    def has_source(p):
+        return source_url in p.get("content", {}).get("rendered", "")
+
+    cat_id = get_category_id(category) if category else None
+    rel_pick = related[:min(3, n_cards)]
+    picked_ids = {p["id"] for p in rel_pick}
+    fill = []
+    for pool in (
+        [p for p in posts if cat_id and cat_id in (p.get("categories") or [])],
+        posts,  # top up from anywhere if the desk is thin
+    ):
+        for p in pool:
+            if len(rel_pick) + len(fill) >= n_cards:
+                break
+            if p["id"] in picked_ids or has_source(p):
+                continue
+            fill.append(p)
+            picked_ids.add(p["id"])
+        if len(rel_pick) + len(fill) >= n_cards:
+            break
+    if not rel_pick and not fill:
+        return ""
+
+    cat_ids = {c for p in rel_pick + fill for c in (p.get("categories") or [])}
+    cat_names = _category_name_map(cat_ids)
+    desk = html.escape(category.replace("-", " ").title()) if category else "the desk"
+
+    sections = []
+    if rel_pick:
+        sections.append(
+            '<!-- wp:paragraph --><p class="rail-heading"><strong>Related</strong></p><!-- /wp:paragraph -->\n'
+            + "\n".join(_rail_card_html(p, cat_names) for p in rel_pick))
+    if fill:
+        sections.append(
+            f'<!-- wp:paragraph --><p class="rail-heading"><strong>More in {desk}</strong></p><!-- /wp:paragraph -->\n'
+            + "\n".join(_rail_card_html(p, cat_names) for p in fill))
+    body = "\n".join(sections)
+    return (
+        '<!-- wp:group {"className":"rail","layout":{"type":"constrained"}} -->\n'
+        f'<div class="wp-block-group rail">{body}\n</div>\n<!-- /wp:group -->'
+    )
+
+
+def wrap_with_rail(body_html, rail_html):
+    """Two-column page: story left (~68%), rail right (~32%)."""
+    if not rail_html:
+        return body_html
+    return (
+        '<!-- wp:columns -->\n<div class="wp-block-columns">'
+        '<!-- wp:column {"width":"68%"} -->\n'
+        '<div class="wp-block-column" style="flex-basis:68%">'
+        f'{body_html}'
+        '</div>\n<!-- /wp:column -->\n\n'
+        '<!-- wp:column {"width":"32%"} -->\n'
+        '<div class="wp-block-column" style="flex-basis:32%">'
+        f'{rail_html}'
+        '</div>\n<!-- /wp:column --></div>\n<!-- /wp:columns -->'
+    )
+
+
+_tag_id_cache = {}
+
+
+def _get_or_create_tag(name, slug):
+    """Tag ID for a name/slug; creates the term when missing; cached."""
+    if slug in _tag_id_cache:
+        return _tag_id_cache[slug]
+    tag_id = None
+    try:
+        r = requests.get(f"{WP_URL}/wp-json/wp/v2/tags", params={"slug": slug},
+                         timeout=15)
+        r.raise_for_status()
+        found = r.json()
+        if found:
+            tag_id = found[0]["id"]
+        else:
+            r = requests.post(f"{WP_URL}/wp-json/wp/v2/tags",
+                              auth=(WP_USERNAME, WP_APP_PASSWORD),
+                              json={"name": name, "slug": slug}, timeout=15)
+            if r.status_code in (200, 201):
+                tag_id = r.json()["id"]
+    except Exception as e:
+        print(f"  Tag lookup/create failed for '{name}': {e}")
+    _tag_id_cache[slug] = tag_id
+    return tag_id
+
+
+def story_tag_ids(headline, body_text, limit=4):
+    """Up to `limit` WP tag IDs from headline keywords (then body)."""
+    candidates, seen = [], set()
+    for w in re.findall(r"[A-Za-z]+", f"{headline} {body_text}"):
+        low = w.lower()
+        if len(w) < 5 or low in _DEDUP_STOPWORDS or low in seen:
+            continue
+        seen.add(low)
+        candidates.append(w.strip(".,").title())
+    ids = []
+    for name in candidates[:limit]:
+        slug = re.sub(r"[^a-z0-9-]", "", name.lower())
+        tid = _get_or_create_tag(name, slug)
+        if tid:
+            ids.append(tid)
+    return ids
 
 
 def post_wordpress_draft(headline, written, source_url, category=None):
     body_html = build_body_html(written, source_url)
-    latest = latest_stories_html()
-    if latest:
-        body_html += "\n\n" + latest
+    body_text = combined_text(written)
+    n_boxes = body_html.count('class="wp-block-group detail-box"')
+    rail = side_rail_html(headline, body_text, n_boxes, category, source_url)
+    body_html = wrap_with_rail(body_html, rail)
 
     payload = {
         "title": headline,
@@ -721,6 +897,10 @@ def post_wordpress_draft(headline, written, source_url, category=None):
             payload["categories"] = [cat_id]
         else:
             print(f"  Category '{category}' not found in WordPress, posting uncategorized.")
+    tag_ids = story_tag_ids(headline, body_text)
+    if tag_ids:
+        payload["tags"] = tag_ids
+
 
     resp = requests.post(
         f"{WP_URL}/wp-json/wp/v2/posts",
