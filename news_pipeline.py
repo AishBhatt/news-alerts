@@ -238,8 +238,8 @@ def rewrite_with_claude(article_text, original_title):
         "- If a box has 1 sentence: write it as plain text (no bullets).\n"
         "- If a box has 2+ points/facts: format as a bullet list. Each bullet is ONE sentence, 15 words or fewer.\n"
         "- Bullets use this format: put each bullet on a new line starting with '* ' (asterisk space).\n"
-        "- Every sentence (bullet or plain) must be 15 words or fewer. Target 10 words per sentence.\n"
-        "- HARD LIMIT: no sentence may exceed 15 words. If a thought needs more words, split it into 2-3 separate short sentences or bullets. One idea per sentence.\n"
+        "- Every sentence (bullet or plain) must be 12 words or fewer. Target 10 words per sentence.\n"
+        "- HARD LIMIT: no sentence may exceed 12 words. If a thought needs more words, split it into 2-3 separate short sentences or bullets. One idea per sentence.\n"
         "- Precise and concise. No filler adjectives, no repeated points, no fluff.\n"
         "- Neutral tone, direct, concrete. Write like a wire reporter, not an AI.\n"
         "- Plain text only. No markdown backticks, no HTML tags.\n\n"
@@ -300,7 +300,7 @@ def rewrite_with_claude(article_text, original_title):
     return parsed
 
 
-MAX_SENTENCE_WORDS = 15
+MAX_SENTENCE_WORDS = 12
 
 
 def _iter_sentences(written):
@@ -336,8 +336,8 @@ def enforce_sentence_length(written):
         "max_tokens": 700,
         "system": (
             "You tighten news copy for PhiNews. You are given a JSON object of "
-            "labeled fact boxes. Rewrite EVERY sentence longer than 15 words into "
-            "1-3 shorter sentences (max 15 words each, target 10), preserving all "
+            "labeled fact boxes. Rewrite EVERY sentence longer than 12 words into "
+            "1-3 shorter sentences (max 12 words each, target 10), preserving all "
             "facts. If a box then contains 2+ sentences, format that box as bullets: "
             "each bullet on its own line starting with '* '. Keep unchanged boxes "
             "exactly as they are. Respond ONLY with the corrected JSON object, same "
