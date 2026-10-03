@@ -125,6 +125,28 @@ BOX_ORDER = [
     ("key_updates", "Key Updates"),
 ]
 
+_BOX_LABELS = dict(BOX_ORDER)
+
+# Words that imply more than one affected party in who_is_affected.
+_PLURAL_AFFECTED = re.compile(
+    r"\b(people|residents|workers|employees|families|passengers|students|children|"
+    r"agencies|companies|countries|governments|officials|customers|users|voters|"
+    r"commuters|communities|households|businesses|millions|thousands|hundreds|"
+    r"dozens|two|three|four|five|six|several|many|both)\b",
+    re.IGNORECASE,
+)
+
+
+def box_label(key, written):
+    """Label for a box; who_is_affected switches between singular and plural."""
+    if key != "who_is_affected":
+        return _BOX_LABELS[key]
+    flag = written.get("who_multiple")
+    if isinstance(flag, bool):
+        return "Who All Are Affected" if flag else "Who is Affected"
+    text = written.get(key) or ""
+    return "Who All Are Affected" if _PLURAL_AFFECTED.search(text) else "Who is Affected"
+
 
 # ---- State helpers ----
 
@@ -244,6 +266,18 @@ def rewrite_with_claude(article_text, original_title):
         "- Precise and concise. No filler adjectives, no repeated points, no fluff.\n"
         "- Neutral tone, direct, concrete. Write like a wire reporter, not an AI.\n"
         "- Plain text only. No markdown backticks, no HTML tags.\n\n"
+        "GRAMMAR AND VOICE — STRICTLY ENFORCED:\n"
+        "- Write in the ACTIVE voice everywhere, not just the headline.\n"
+        "- Every sentence must be a complete, grammatical English sentence with a "
+        "subject and a finite verb. Never drop auxiliary verbs: write 'Two people "
+        "were injured', NOT 'Two people injured'; 'Traffic is now disrupted', NOT "
+        "'Traffic now disrupted'. No headline-style fragments.\n"
+        "- Check subject-verb agreement and tense consistency before finishing.\n\n"
+        "when_it_happened — STRICTLY ENFORCED:\n"
+        "- Always state the exact calendar date. Include the weekday if you want, "
+        "but the date is mandatory: 'Saturday, October 3' or 'October 3, 2026'.\n"
+        "- NEVER write a bare weekday or relative term alone ('Saturday', 'yesterday', "
+        "'earlier this week') — a reader weeks later must know exactly when.\n\n"
         "WORD LIMIT:\n"
         "- Total article word count: maximum 200 words TOTAL across all boxes (including the headline).\n"
         "- This is strict. Prioritize clarity and key facts over completeness.\n\n"
@@ -258,8 +292,10 @@ def rewrite_with_claude(article_text, original_title):
         "ONLY the box keys you actually have real content for, in this shape (example shows "
         "all keys, but you will normally omit several of them):\n"
         '{"headline": "...", "what_happened": "...", "where_it_happened": "...", '
-        '"who_is_affected": "...", "how_it_happened": "...", "why_it_happened": "...", '
-        '"when_it_happened": "...", "key_updates": "..."}\n\n'
+        '"who_is_affected": "...", "who_multiple": true, "how_it_happened": "...", '
+        '"why_it_happened": "...", "when_it_happened": "...", "key_updates": "..."}\n'
+        "Set \"who_multiple\": true when who_is_affected names more than one person "
+        "or group; set it false or omit it when exactly one person is affected.\n\n"
         "BULLET EXAMPLE:\n"
         "If key_updates has 3 facts, format it like this:\n"
         '"key_updates": "* Ethiopia accused Eritrea and Sudan of backing armed groups.\\n* All countries denied allegations.\\n* Fighting could disrupt Ethiopia\'s main import route."'
@@ -632,11 +668,11 @@ def build_box_block(label, text):
 
 def build_body_html(written, source_url):
     blocks = []
-    for key, label in BOX_ORDER:
+    for key, _label in BOX_ORDER:
         text = (written.get(key) or "").strip()
         if not text:
             continue
-        blocks.append(build_box_block(label, text))
+        blocks.append(build_box_block(box_label(key, written), text))
 
     # Source box is always included.
     source_block = (
@@ -1104,10 +1140,10 @@ def main():
 
             # Log exactly which boxes Claude filled in, and what they say.
             box_log_lines = []
-            for key, label in BOX_ORDER:
+            for key, _label in BOX_ORDER:
                 val = (written.get(key) or "").strip()
                 if val:
-                    box_log_lines.append(f"    [{label}] {val}")
+                    box_log_lines.append(f"    [{box_label(key, written)}] {val}")
             print(
                 f"  --- DRAFT ---\n  Headline: {headline}\n"
                 + "\n".join(box_log_lines)
