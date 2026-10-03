@@ -27,6 +27,7 @@ TAGLINES = [
     "The TL;DR is the story.",
     "The news. TL;DR'd.",
     "Everything you need. Nothing you don't.",
+    "The golden proportion of news.",
 ]
 
 INDEX_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)),
