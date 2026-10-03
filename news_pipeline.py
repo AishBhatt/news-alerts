@@ -267,13 +267,14 @@ def post_to_wordpress(headline, blocks, source_url, source_name):
         }
         blocks.append(source_block)
         
-        # Serialize blocks to HTML
+        # Serialize blocks to plain HTML (simpler, more reliable than Gutenberg syntax)
         content_html = ""
         for block in blocks:
             if block["blockName"] == "core/details":
                 summary = block["attrs"].get("summary", "Details")
                 inner_html = block.get("innerHtml", "")
-                content_html += f'<!-- wp:details {{"summary":"{summary}"}} --><details><summary>{summary}</summary>{inner_html}</details><!-- /wp:details -->\n'
+                # Wrap in <div> with a heading for the summary
+                content_html += f"<h3>{summary}</h3>\n{inner_html}\n"
         
         payload = {
             "title": headline,
