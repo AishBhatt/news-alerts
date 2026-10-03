@@ -395,8 +395,14 @@ Output ONLY the article text or fact boxes. No preamble, no markdown formatting.
             if not headline:
                 headline = lines[0].strip() if lines else "News Update"
             
+            # Title case the headline
+            headline = headline.title()
+            
             if len(headline) > 100:
                 headline = headline[:97] + "..."
+            
+            # Debug: log what Claude returned
+            print(f"  Claude output ({len(written)} chars): {written[:200]}")
             
             # Check for duplicates in WordPress
             if draft_exists_in_wordpress(headline, url):
