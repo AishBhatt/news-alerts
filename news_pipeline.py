@@ -833,6 +833,51 @@ def wrap_with_rail(body_html, rail_html):
     )
 
 
+_tag_id_cache = {}
+
+
+def _get_or_create_tag(name, slug):
+    """Tag ID for a name/slug; creates the term when missing; cached."""
+    if slug in _tag_id_cache:
+        return _tag_id_cache[slug]
+    tag_id = None
+    try:
+        r = requests.get(f"{WP_URL}/wp-json/wp/v2/tags", params={"slug": slug},
+                         timeout=15)
+        r.raise_for_status()
+        found = r.json()
+        if found:
+            tag_id = found[0]["id"]
+        else:
+            r = requests.post(f"{WP_URL}/wp-json/wp/v2/tags",
+                              auth=(WP_USERNAME, WP_APP_PASSWORD),
+                              json={"name": name, "slug": slug}, timeout=15)
+            if r.status_code in (200, 201):
+                tag_id = r.json()["id"]
+    except Exception as e:
+        print(f"  Tag lookup/create failed for '{name}': {e}")
+    _tag_id_cache[slug] = tag_id
+    return tag_id
+
+
+def story_tag_ids(headline, body_text, limit=4):
+    """Up to `limit` WP tag IDs from headline keywords (then body)."""
+    candidates, seen = [], set()
+    for w in re.findall(r"[A-Za-z]+", f"{headline} {body_text}"):
+        low = w.lower()
+        if len(w) < 5 or low in _DEDUP_STOPWORDS or low in seen:
+            continue
+        seen.add(low)
+        candidates.append(w.strip(".,").title())
+    ids = []
+    for name in candidates[:limit]:
+        slug = re.sub(r"[^a-z0-9-]", "", name.lower())
+        tid = _get_or_create_tag(name, slug)
+        if tid:
+            ids.append(tid)
+    return ids
+
+
 def post_wordpress_draft(headline, written, source_url, category=None):
     body_html = build_body_html(written, source_url)
     body_text = combined_text(written)
@@ -852,6 +897,10 @@ def post_wordpress_draft(headline, written, source_url, category=None):
             payload["categories"] = [cat_id]
         else:
             print(f"  Category '{category}' not found in WordPress, posting uncategorized.")
+    tag_ids = story_tag_ids(headline, body_text)
+    if tag_ids:
+        payload["tags"] = tag_ids
+
 
     resp = requests.post(
         f"{WP_URL}/wp-json/wp/v2/posts",
