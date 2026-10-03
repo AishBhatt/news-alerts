@@ -65,14 +65,18 @@ def main():
     raw = content["raw"] if isinstance(content, dict) else content
 
     new_p = f'<p class="hdr-tag">{tagline_markup(tagline)}</p>'
-    updated = re.sub(r'<p class="hdr-tag">.*?</p>', new_p, raw, count=1, flags=re.S)
-    if updated == raw:
+    if not re.search(r'<p[^>]*hdr-tag[^>]*>.*?</p>', raw, flags=re.S):
         print("No .hdr-tag paragraph found in header — skipping header update.")
     else:
-        r = requests.post(
-            f"{WP_URL}/wp-json/wp/v2/template-parts/phi-news//header",
-            auth=auth, json={"content": updated}, timeout=20)
-        print("header:", r.status_code)
+        updated = re.sub(r'<p[^>]*hdr-tag[^>]*>.*?</p>', new_p, raw,
+                         count=1, flags=re.S)
+        if updated == raw:
+            print("Tagline already current — header unchanged.")
+        else:
+            r = requests.post(
+                f"{WP_URL}/wp-json/wp/v2/template-parts/phi-news//header",
+                auth=auth, json={"content": updated}, timeout=20)
+            print("header:", r.status_code)
 
     # 2) site description (RSS/meta)
     r = requests.post(f"{WP_URL}/wp-json/wp/v2/settings", auth=auth,
