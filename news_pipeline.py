@@ -757,10 +757,11 @@ def _rail_card_html(post, cat_names):
 
 def side_rail_html(headline, body_text, detail_box_count, category, source_url):
     """
-    Right rail: related stories first (same-story-token match), topped up
-    with latest posts from this category. 2 cards for short stories
-    (<5 detail boxes), 3 for longer ones, so the rail never outruns
-    the article. Empty string when there is nothing to show.
+    Right rail: up to 3 related stories (same-story-token match) under a
+    "Related" heading, then "More in {desk}" cards filling the remaining
+    slots. Total cards tracks the story's box count (2-6) so the rail
+    ends roughly level with the article. Empty string when there is
+    nothing to show.
     """
     try:
         posts = _fetch_recent_posts()
@@ -768,42 +769,50 @@ def side_rail_html(headline, body_text, detail_box_count, category, source_url):
         print(f"  Rail lookup failed, skipping rail: {e}")
         return ""
 
-    n_cards = 3 if detail_box_count >= 5 else 2
+    n_cards = min(6, max(2, detail_box_count))
     new_tokens = _content_tokens(f"{headline} {body_text}")
     related = _related_posts(posts, new_tokens, source_url)
 
+    def has_source(p):
+        return source_url in p.get("content", {}).get("rendered", "")
+
     cat_id = get_category_id(category) if category else None
-    picked, seen_ids = [], set()
-    for p in related:
-        picked.append(p)
-        seen_ids.add(p["id"])
-        if len(picked) >= n_cards:
-            break
-    if len(picked) < n_cards and cat_id:
-        for p in posts:
-            if p["id"] in seen_ids or cat_id not in (p.get("categories") or []):
-                continue
-            if source_url in p.get("content", {}).get("rendered", ""):
-                continue
-            picked.append(p)
-            seen_ids.add(p["id"])
-            if len(picked) >= n_cards:
+    rel_pick = related[:min(3, n_cards)]
+    picked_ids = {p["id"] for p in rel_pick}
+    fill = []
+    for pool in (
+        [p for p in posts if cat_id and cat_id in (p.get("categories") or [])],
+        posts,  # top up from anywhere if the desk is thin
+    ):
+        for p in pool:
+            if len(rel_pick) + len(fill) >= n_cards:
                 break
-    if not picked:
+            if p["id"] in picked_ids or has_source(p):
+                continue
+            fill.append(p)
+            picked_ids.add(p["id"])
+        if len(rel_pick) + len(fill) >= n_cards:
+            break
+    if not rel_pick and not fill:
         return ""
 
-    cat_ids = {c for p in picked for c in (p.get("categories") or [])}
+    cat_ids = {c for p in rel_pick + fill for c in (p.get("categories") or [])}
     cat_names = _category_name_map(cat_ids)
-    heading = "Related" if related else (
-        f"More in {html.escape(category.replace('-', ' ').title())}"
-        if category else "More stories")
+    desk = html.escape(category.replace("-", " ").title()) if category else "the desk"
 
-    cards = "\n".join(_rail_card_html(p, cat_names) for p in picked)
+    sections = []
+    if rel_pick:
+        sections.append(
+            '<!-- wp:paragraph --><p class="rail-heading"><strong>Related</strong></p><!-- /wp:paragraph -->\n'
+            + "\n".join(_rail_card_html(p, cat_names) for p in rel_pick))
+    if fill:
+        sections.append(
+            f'<!-- wp:paragraph --><p class="rail-heading"><strong>More in {desk}</strong></p><!-- /wp:paragraph -->\n'
+            + "\n".join(_rail_card_html(p, cat_names) for p in fill))
+    body = "\n".join(sections)
     return (
         '<!-- wp:group {"className":"rail","layout":{"type":"constrained"}} -->\n'
-        '<div class="wp-block-group rail">'
-        f'<!-- wp:paragraph --><p class="rail-heading"><strong>{heading}</strong></p><!-- /wp:paragraph -->\n'
-        f'{cards}\n</div>\n<!-- /wp:group -->'
+        f'<div class="wp-block-group rail">{body}\n</div>\n<!-- /wp:group -->'
     )
 
 
