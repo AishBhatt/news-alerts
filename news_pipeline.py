@@ -239,6 +239,7 @@ def rewrite_with_claude(article_text, original_title):
         "- If a box has 2+ points/facts: format as a bullet list. Each bullet is ONE sentence, 15 words or fewer.\n"
         "- Bullets use this format: put each bullet on a new line starting with '* ' (asterisk space).\n"
         "- Every sentence (bullet or plain) must be 15 words or fewer. Target 10 words per sentence.\n"
+        "- HARD LIMIT: no sentence may exceed 15 words. If a thought needs more words, split it into 2-3 separate short sentences or bullets. One idea per sentence.\n"
         "- Precise and concise. No filler adjectives, no repeated points, no fluff.\n"
         "- Neutral tone, direct, concrete. Write like a wire reporter, not an AI.\n"
         "- Plain text only. No markdown backticks, no HTML tags.\n\n"
@@ -295,7 +296,74 @@ def rewrite_with_claude(article_text, original_title):
         # what_happened so nothing is silently lost.
         parsed = {"headline": original_title, "what_happened": cleaned}
 
+    parsed = enforce_sentence_length(parsed)
     return parsed
+
+
+MAX_SENTENCE_WORDS = 15
+
+
+def _iter_sentences(written):
+    for key, _label in BOX_ORDER:
+        val = (written.get(key) or "").strip()
+        for line in val.split("\n"):
+            line = line.strip().lstrip("*").strip()
+            for sentence in re.split(r"(?<=[.!?])\s+", line):
+                sentence = sentence.strip()
+                if sentence:
+                    yield key, sentence
+
+
+def fix_long_sentences(written):
+    """Return the (key -> corrected text) for any sentence over the word cap."""
+    fixable = {}
+    for key, sentence in _iter_sentences(written):
+        if len(sentence.split()) > MAX_SENTENCE_WORDS:
+            fixable.setdefault(key, []).append(sentence)
+    return fixable
+
+
+def enforce_sentence_length(written):
+    """If Claude slips past the 15-word cap, send the draft back once to
+    split long sentences into shorter ones/bullets before posting."""
+    offenders = fix_long_sentences(written)
+    if not offenders:
+        return written
+    print(f"[fix] {sum(len(v) for v in offenders.values())} sentence(s) over "
+          f"{MAX_SENTENCE_WORDS} words; requesting shorter rewrite")
+    payload = {
+        "model": CLAUDE_MODEL,
+        "max_tokens": 700,
+        "system": (
+            "You tighten news copy for PhiNews. You are given a JSON object of "
+            "labeled fact boxes. Rewrite EVERY sentence longer than 15 words into "
+            "1-3 shorter sentences (max 15 words each, target 10), preserving all "
+            "facts. If a box then contains 2+ sentences, format that box as bullets: "
+            "each bullet on its own line starting with '* '. Keep unchanged boxes "
+            "exactly as they are. Respond ONLY with the corrected JSON object, same "
+            "keys, no markdown fences."
+        ),
+        "messages": [{"role": "user", "content": json.dumps(written, ensure_ascii=False)}],
+    }
+    try:
+        resp = requests.post(
+            CLAUDE_URL,
+            headers={
+                "x-api-key": ANTHROPIC_API_KEY,
+                "anthropic-version": "2023-06-01",
+                "content-type": "application/json",
+            },
+            json=payload,
+            timeout=60,
+        )
+        resp.raise_for_status()
+        raw = resp.json()["content"][0]["text"]
+        repaired = json.loads(re.sub(r"```json|```", "", raw).strip())
+        if isinstance(repaired, dict) and repaired.get("headline"):
+            return repaired
+    except Exception as e:
+        print(f"[fix] rewrite failed, keeping original: {e}")
+    return written
 
 
 def title_case(headline):
