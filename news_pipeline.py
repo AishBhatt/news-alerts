@@ -323,17 +323,36 @@ def fix_long_sentences(written):
     return fixable
 
 
+REPAIR_ATTEMPTS = 3
+
+
 def enforce_sentence_length(written):
-    """If Claude slips past the 15-word cap, send the draft back once to
-    split long sentences into shorter ones/bullets before posting."""
-    offenders = fix_long_sentences(written)
-    if not offenders:
-        return written
-    print(f"[fix] {sum(len(v) for v in offenders.values())} sentence(s) over "
-          f"{MAX_SENTENCE_WORDS} words; requesting shorter rewrite")
+    """Send the draft back to Claude to split long sentences, retrying until
+    every sentence is under the cap. If repair attempts are exhausted, split
+    remaining offenders deterministically so nothing over the cap posts."""
+    current = written
+    for attempt in range(REPAIR_ATTEMPTS):
+        offenders = fix_long_sentences(current)
+        if not offenders:
+            return current
+        print(f"[fix] attempt {attempt + 1}: {sum(len(v) for v in offenders.values())} "
+              f"sentence(s) over {MAX_SENTENCE_WORDS} words; requesting shorter rewrite")
+        repaired = _repair_with_claude(current)
+        if repaired is None:
+            break
+        current = repaired
+    remaining = fix_long_sentences(current)
+    if remaining:
+        print(f"[fix] repair exhausted; splitting {sum(len(v) for v in remaining.values())} "
+              f"sentence(s) deterministically")
+        current = _split_long_sentences(current)
+    return current
+
+
+def _repair_with_claude(written):
     payload = {
         "model": CLAUDE_MODEL,
-        "max_tokens": 700,
+        "max_tokens": 1000,
         "system": (
             "You tighten news copy for PhiNews. You are given a JSON object of "
             "labeled fact boxes. Rewrite EVERY sentence longer than 12 words into "
@@ -362,8 +381,67 @@ def enforce_sentence_length(written):
         if isinstance(repaired, dict) and repaired.get("headline"):
             return repaired
     except Exception as e:
-        print(f"[fix] rewrite failed, keeping original: {e}")
-    return written
+        print(f"[fix] rewrite failed: {e}")
+    return None
+
+
+def _split_sentence(sentence):
+    """Deterministically break one over-cap sentence into <= MAX_SENTENCE_WORDS
+    chunks, preferring clause boundaries (commas, semicolons, dashes)."""
+    clauses = re.split(r"(?<=[,;—–])\s+|(?<=\S)\s+[—–]\s+", sentence)
+    chunks, current = [], ""
+    for clause in clauses:
+        clause = clause.strip()
+        if not clause:
+            continue
+        candidate = f"{current} {clause}".strip()
+        if current and len(candidate.split()) > MAX_SENTENCE_WORDS:
+            chunks.append(current.rstrip(",;—–"))
+            current = clause
+        else:
+            current = candidate
+    if current:
+        chunks.append(current)
+    # Any chunk still over the cap has no clause boundaries; hard-wrap on words.
+    out = []
+    for chunk in chunks:
+        words = chunk.split()
+        while len(words) > MAX_SENTENCE_WORDS:
+            out.append(" ".join(words[:MAX_SENTENCE_WORDS]))
+            words = words[MAX_SENTENCE_WORDS:]
+        if words:
+            out.append(" ".join(words))
+    return out
+
+
+def _split_long_sentences(written):
+    """Rebuild each box, replacing over-cap sentences with split chunks.
+    A box that ends up with 2+ pieces becomes a '* ' bullet list."""
+    result = dict(written)
+    for key, _label in BOX_ORDER:
+        val = (result.get(key) or "").strip()
+        if not val:
+            continue
+        lines = []
+        for line in val.split("\n"):
+            line = line.strip()
+            is_bullet = line.startswith("*")
+            text = line.lstrip("*").strip()
+            pieces = []
+            for sentence in re.split(r"(?<=[.!?])\s+", text):
+                sentence = sentence.strip()
+                if not sentence:
+                    continue
+                if len(sentence.split()) > MAX_SENTENCE_WORDS:
+                    pieces.extend(_split_sentence(sentence))
+                else:
+                    pieces.append(sentence)
+            if is_bullet or len(pieces) > 1:
+                lines.extend(f"* {p}" for p in pieces)
+            else:
+                lines.extend(pieces)
+        result[key] = "\n".join(lines)
+    return result
 
 
 def title_case(headline):
