@@ -58,8 +58,12 @@ from itertools import zip_longest
 from urllib.parse import urlparse
 import feedparser
 import requests
-from newspaper import Article
 from bs4 import BeautifulSoup
+
+# newspaper3k is imported lazily inside extract_article() because its
+# lxml.html.clean dependency (lxml_html_clean) may be missing, and a
+# top-level ImportError would kill the whole pipeline before the
+# BeautifulSoup fallback could run.
 
 # ---- Config from environment ----
 ANTHROPIC_API_KEY = os.environ.get("ANTHROPIC_API_KEY")
@@ -192,6 +196,7 @@ def extract_article(url):
     title = ""
     text = ""
     try:
+        from newspaper import Article
         article = Article(url)
         article.download()
         article.parse()

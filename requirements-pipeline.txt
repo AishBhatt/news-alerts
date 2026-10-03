@@ -4,3 +4,4 @@ newspaper3k
 beautifulsoup4
 anthropic
 lxml
+lxml_html_clean
