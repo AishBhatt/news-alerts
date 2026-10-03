@@ -1,15 +1,15 @@
-"""Rotate the site tagline every 6 hours.
+"""Rotate the site tagline on every run (every 6 hours, plus manual).
 
-Walks TAGLINES in order based on elapsed 6-hour slots since the epoch
-(stateless — no stored index), wraps at the end, and writes the current
-one into the header template part's .hdr-tag paragraph plus the WP site
-description (used by RSS/SEO).
+Each run reads the index from tagline_index.txt, applies that tagline to
+the header template part's .hdr-tag paragraph and the WP site
+description, then writes (idx+1) back for the next run. The workflow
+commits the file, so the position persists between runs and wraps at
+the end of the list.
 """
 import html
 import os
 import re
 import sys
-import time
 
 import requests
 
@@ -29,7 +29,20 @@ TAGLINES = [
     "Everything you need. Nothing you don't.",
 ]
 
-SIX_HOURS = 6 * 60 * 60
+INDEX_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                          "tagline_index.txt")
+
+
+def _read_index():
+    try:
+        return int(open(INDEX_FILE).read().strip()) % len(TAGLINES)
+    except Exception:
+        return 0
+
+
+def _write_index(idx):
+    with open(INDEX_FILE, "w") as f:
+        f.write(str(idx))
 
 
 def tagline_markup(text):
@@ -51,10 +64,10 @@ def main():
         sys.exit(1)
 
     auth = (WP_USERNAME, WP_APP_PASSWORD)
-    slot = int(time.time() // SIX_HOURS)
-    idx = slot % len(TAGLINES)
+    idx = _read_index()
     tagline = TAGLINES[idx]
-    print(f"Slot {slot} -> tagline {idx + 1}/{len(TAGLINES)}: {tagline}")
+    print(f"Index {idx} -> tagline {idx + 1}/{len(TAGLINES)}: {tagline}")
+    _write_index((idx + 1) % len(TAGLINES))
 
     # 1) header template part: replace the .hdr-tag paragraph content
     resp = requests.get(
@@ -82,6 +95,7 @@ def main():
     r = requests.post(f"{WP_URL}/wp-json/wp/v2/settings", auth=auth,
                       json={"description": tagline}, timeout=20)
     print("settings:", r.status_code)
+    print(f"Wrote next index {(idx + 1) % len(TAGLINES)} to {INDEX_FILE}")
 
 
 if __name__ == "__main__":
