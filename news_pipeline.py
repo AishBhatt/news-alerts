@@ -81,29 +81,30 @@ CHECKS_ENABLED = _checks_env_raw.strip().lower() != "false"
 
 STATE_FILE = "seen_articles.json"
 
-FEEDS = [
+# feed URL -> WordPress category slug the article is filed under
+FEEDS = {
     # --- World news ---
-    "https://feeds.bbci.co.uk/news/world/rss.xml",
-    "https://www.aljazeera.com/xml/rss/all.xml",
-    "https://www.theguardian.com/world/rss",
+    "https://feeds.bbci.co.uk/news/world/rss.xml": "world",
+    "https://www.aljazeera.com/xml/rss/all.xml": "world",
+    "https://www.theguardian.com/world/rss": "world",
     # --- India ---
-    "https://www.thehindu.com/news/national/feeder/default.rss",
-    "https://indianexpress.com/section/india/feed/",
+    "https://www.thehindu.com/news/national/feeder/default.rss": "india",
+    "https://indianexpress.com/section/india/feed/": "india",
     # --- Business ---
-    "https://indianexpress.com/section/business/feed/",
-    "https://feeds.bbci.co.uk/news/business/rss.xml",
+    "https://indianexpress.com/section/business/feed/": "business",
+    "https://feeds.bbci.co.uk/news/business/rss.xml": "business",
     # --- Sports ---
-    "https://www.theguardian.com/sport/rss",
+    "https://www.theguardian.com/sport/rss": "sports",
     # --- Science ---
-    "https://www.theguardian.com/science/rss",
+    "https://www.theguardian.com/science/rss": "science",
     # --- Lifestyle ---
-    "https://indianexpress.com/section/lifestyle/feed/",
+    "https://indianexpress.com/section/lifestyle/feed/": "lifestyle",
     # --- Tech ---
-    "https://techcrunch.com/feed/",
-    "https://www.theverge.com/rss/index.xml",
+    "https://techcrunch.com/feed/": "technology",
+    "https://www.theverge.com/rss/index.xml": "technology",
     # --- Entertainment ---
-    "https://feeds.bbci.co.uk/news/entertainment_and_arts/rss.xml",
-]
+    "https://feeds.bbci.co.uk/news/entertainment_and_arts/rss.xml": "entertainment",
+}
 
 CLAUDE_MODEL = "claude-haiku-4-5-20251001"
 CLAUDE_URL = "https://api.anthropic.com/v1/messages"
@@ -149,7 +150,7 @@ def get_new_entries(seen):
     A dead or empty feed just contributes nothing and does not break the run.
     """
     per_feed = []
-    for feed_url in FEEDS:
+    for feed_url, category in FEEDS.items():
         try:
             parsed = feedparser.parse(feed_url)
         except Exception as e:
@@ -159,7 +160,7 @@ def get_new_entries(seen):
         for entry in parsed.entries:
             link = entry.get("link")
             if link and link not in seen and link not in links:
-                links.append(link)
+                links.append((link, category))
         if links:
             per_feed.append(links)
 
@@ -500,13 +501,45 @@ def build_body_html(written, source_url):
     return "\n\n".join(blocks)
 
 
-def post_wordpress_draft(headline, written, source_url):
+_category_id_cache = {}
+
+
+def get_category_id(slug):
+    """Look up a WordPress category ID by slug; cached; None if not found."""
+    if slug in _category_id_cache:
+        return _category_id_cache[slug]
+    try:
+        resp = requests.get(
+            f"{WP_URL}/wp-json/wp/v2/categories",
+            auth=(WP_USERNAME, WP_APP_PASSWORD),
+            params={"slug": slug},
+            timeout=15,
+        )
+        resp.raise_for_status()
+        cats = resp.json()
+        cat_id = cats[0]["id"] if cats else None
+    except Exception as e:
+        print(f"  Category lookup failed for '{slug}': {e}")
+        cat_id = None
+    _category_id_cache[slug] = cat_id
+    return cat_id
+
+
+def post_wordpress_draft(headline, written, source_url, category=None):
     body_html = build_body_html(written, source_url)
+
+    payload = {"title": headline, "content": body_html, "status": "draft"}
+    if category:
+        cat_id = get_category_id(category)
+        if cat_id:
+            payload["categories"] = [cat_id]
+        else:
+            print(f"  Category '{category}' not found in WordPress, posting uncategorized.")
 
     resp = requests.post(
         f"{WP_URL}/wp-json/wp/v2/posts",
         auth=(WP_USERNAME, WP_APP_PASSWORD),
-        json={"title": headline, "content": body_html, "status": "draft"},
+        json=payload,
         timeout=30,
     )
     resp.raise_for_status()
@@ -594,7 +627,7 @@ def main():
 
     posted, skipped = 0, 0
 
-    for url in new_links:
+    for url, category in new_links:
         try:
             if "/video/" in url:
                 print(f"Skipping video URL: {url}")
@@ -651,7 +684,7 @@ def main():
             )
 
             if grammar_ok and plagiarism_ok:
-                wp_post = post_wordpress_draft(headline, written, url)
+                wp_post = post_wordpress_draft(headline, written, url, category)
                 edit_link = f"{WP_URL}/wp-admin/post.php?post={wp_post['id']}&action=edit"
                 checks_note = "(checks bypassed)" if not CHECKS_ENABLED else f"Grammar issues: {issue_count} | Plagiarism match: {match_pct:.1f}%"
                 notify_slack(
