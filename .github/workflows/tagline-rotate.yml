@@ -1,0 +1,35 @@
+name: Rotate Header Tagline (every 6h)
+
+on:
+  schedule:
+    - cron: "5 */6 * * *"   # every 6 hours, 5 min past
+  workflow_dispatch: {}
+
+concurrency:
+  group: tagline-rotate
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  rotate:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install requests
+        run: pip install requests
+
+      - name: Rotate tagline
+        env:
+          WP_URL: ${{ secrets.WP_URL }}
+          WP_USERNAME: ${{ secrets.WP_USERNAME }}
+          WP_APP_PASSWORD: ${{ secrets.WP_APP_PASSWORD }}
+        run: python rotate_tagline.py
