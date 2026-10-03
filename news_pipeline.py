@@ -193,13 +193,17 @@ def rewrite_with_claude(article_text, original_title):
         "key_updates is a catch-all: use it only for a real, important fact that doesn't cleanly "
         "belong in any of the other boxes (e.g. an official's quote, a related development, next "
         "steps). If everything already fits into the other boxes, omit key_updates too.\n\n"
-        "Style rules for every box you do include — STRICTLY ENFORCED:\n"
-        "- 1-3 sentences per box.\n"
-        "- Every sentence must be 15 words or fewer. Target 10 words per sentence.\n"
-        "- Never chain multiple ideas with commas — separate sentences instead.\n"
+        "FORMATTING RULES — STRICTLY ENFORCED:\n"
+        "- If a box has 1 sentence: write it as plain text (no bullets).\n"
+        "- If a box has 2+ points/facts: format as a bullet list. Each bullet is ONE sentence, 15 words or fewer.\n"
+        "- Bullets use this format: put each bullet on a new line starting with '* ' (asterisk space).\n"
+        "- Every sentence (bullet or plain) must be 15 words or fewer. Target 10 words per sentence.\n"
         "- Precise and concise. No filler adjectives, no repeated points, no fluff.\n"
         "- Neutral tone, direct, concrete. Write like a wire reporter, not an AI.\n"
-        "- Plain text only. No markdown, no HTML, no bullet points.\n\n"
+        "- Plain text only. No markdown backticks, no HTML tags.\n\n"
+        "WORD LIMIT:\n"
+        "- Total article word count: maximum 200 words TOTAL across all boxes (including the headline).\n"
+        "- This is strict. Prioritize clarity and key facts over completeness.\n\n"
         "HEADLINE RULES — STRICTLY ENFORCED:\n"
         "- Maximum 8 words and 55 characters including spaces. Shorter is better.\n"
         "- Lead with the main subject and the key action. Active voice, present tense.\n"
@@ -212,7 +216,10 @@ def rewrite_with_claude(article_text, original_title):
         "all keys, but you will normally omit several of them):\n"
         '{"headline": "...", "what_happened": "...", "where_it_happened": "...", '
         '"who_is_affected": "...", "how_it_happened": "...", "why_it_happened": "...", '
-        '"when_it_happened": "...", "key_updates": "..."}'
+        '"when_it_happened": "...", "key_updates": "..."}\n\n'
+        "BULLET EXAMPLE:\n"
+        "If key_updates has 3 facts, format it like this:\n"
+        '"key_updates": "* Ethiopia accused Eritrea and Sudan of backing armed groups.\\n* All countries denied allegations.\\n* Fighting could disrupt Ethiopia\'s main import route."'
     )
 
     user_content = (
@@ -251,12 +258,15 @@ def rewrite_with_claude(article_text, original_title):
 
 
 def combined_text(written):
-    """All box text concatenated, for grammar/plagiarism checking and logging."""
+    """All box text concatenated, for grammar/plagiarism checking and logging.
+    Strips bullet formatting (* ) for cleaner text."""
     parts = []
     for key, _label in BOX_ORDER:
         val = (written.get(key) or "").strip()
         if val:
-            parts.append(val)
+            # Remove bullet formatting for plain text output
+            cleaned = val.replace('* ', '').replace('\n', ' ')
+            parts.append(cleaned)
     return " ".join(parts)
 
 
@@ -384,12 +394,37 @@ def source_link_html(url):
 
 
 def build_box_block(label, text):
-    text_esc = html.escape(text)
+    """
+    Build a detail box. If text contains bullets (lines starting with '* '),
+    render as an HTML list. Otherwise render as a paragraph.
+    """
+    lines = text.strip().split('\n')
+    has_bullets = any(line.strip().startswith('* ') for line in lines)
+    
+    if has_bullets:
+        # Parse bullet points and render as list
+        list_items = []
+        for line in lines:
+            line = line.strip()
+            if line.startswith('* '):
+                # Remove the '* ' prefix and escape
+                item_text = html.escape(line[2:])
+                list_items.append(f'<li>{item_text}</li>')
+        
+        content_html = '\n'.join(list_items)
+        content_block = (
+            f'<!-- wp:list -->\n<ul>\n{content_html}\n</ul>\n<!-- /wp:list -->'
+        )
+    else:
+        # Plain paragraph
+        text_esc = html.escape(text.strip())
+        content_block = f'<!-- wp:paragraph -->\n<p>{text_esc}</p>\n<!-- /wp:paragraph -->'
+    
     return (
         '<!-- wp:group {"className":"detail-box","layout":{"type":"constrained"}} -->\n'
         f'<div class="wp-block-group detail-box"><!-- wp:paragraph -->\n'
         f'<p><strong>{html.escape(label)}</strong></p>\n<!-- /wp:paragraph -->\n\n'
-        f'<!-- wp:paragraph -->\n<p>{text_esc}</p>\n<!-- /wp:paragraph --></div>\n<!-- /wp:group -->'
+        f'{content_block}\n</div>\n<!-- /wp:group -->'
     )
 
 
@@ -425,6 +460,38 @@ def post_wordpress_draft(headline, written, source_url):
     )
     resp.raise_for_status()
     return resp.json()
+
+
+def draft_exists_in_wordpress(headline, source_url):
+    """
+    Check if a draft with this headline already exists in WordPress.
+    Also check if this source URL is already in any draft's content.
+    Returns True if found, False if safe to post.
+    """
+    try:
+        # Get all drafts
+        resp = requests.get(
+            f"{WP_URL}/wp-json/wp/v2/posts",
+            auth=(WP_USERNAME, WP_APP_PASSWORD),
+            params={"status": "draft", "per_page": 100},
+            timeout=30,
+        )
+        resp.raise_for_status()
+        drafts = resp.json()
+        
+        for draft in drafts:
+            # Check if headline matches
+            if draft.get("title", {}).get("rendered", "").strip() == headline.strip():
+                return True
+            # Check if source URL is already in the draft content
+            if source_url in draft.get("content", {}).get("rendered", ""):
+                return True
+        
+        return False
+    except Exception as e:
+        print(f"  Warning: couldn't check WordPress drafts: {e}", file=sys.stderr)
+        # Fail open — if we can't check, don't block posting
+        return False
 
 
 # ---- Step 7: Slack ----
@@ -484,6 +551,12 @@ def main():
                 print("  Skipping, too little extracted text.")
                 seen.add(url)
                 continue
+            
+            # Check word count: max ~200 words per article (rough estimate: 1 word per 5 chars)
+            word_count_estimate = len(article["text"]) / 5
+            if word_count_estimate > 3000:  # ~600 words is roughly 3000 chars, be generous on input
+                print(f"  Skipping, article too long ({word_count_estimate:.0f} words estimated, truncating to first 3000 chars)")
+                article["text"] = article["text"][:3000]
 
             written = rewrite_with_claude(article["text"], article["title"])
             headline = written.get("headline", article["title"])
@@ -491,6 +564,12 @@ def main():
 
             if not body_text.strip():
                 print("  Skipping, Claude returned no usable box content.")
+                seen.add(url)
+                continue
+
+            # Check if this story already exists as a draft
+            if draft_exists_in_wordpress(headline, url):
+                print(f"  Skipping, draft already exists: {headline}")
                 seen.add(url)
                 continue
 
