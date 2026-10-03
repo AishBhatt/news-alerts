@@ -297,6 +297,17 @@ def rewrite_with_claude(article_text, original_title):
     return parsed
 
 
+def title_case(headline):
+    """Title-case the headline but keep all-caps acronyms (US, UK, AI, UN...) intact."""
+    if not headline:
+        return headline
+    words = headline.split()
+    return " ".join(
+        w if (len(w) > 1 and w.isupper()) else w[0].upper() + w[1:]
+        for w in words
+    )
+
+
 def combined_text(written):
     """All box text concatenated, for grammar/plagiarism checking and logging.
     Strips bullet formatting (* ) for cleaner text."""
@@ -603,7 +614,7 @@ def main():
                 article["text"] = article["text"][:3000]
 
             written = rewrite_with_claude(article["text"], article["title"])
-            headline = written.get("headline", article["title"])
+            headline = title_case(written.get("headline", article["title"]))
             body_text = combined_text(written)
 
             if not body_text.strip():
