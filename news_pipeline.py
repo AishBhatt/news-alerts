@@ -674,10 +674,65 @@ def get_category_id(slug):
     return cat_id
 
 
-def post_wordpress_draft(headline, written, source_url, category=None):
-    body_html = build_body_html(written, source_url)
+def story_meta_html(category):
+    """Small 'Category · Month D, YYYY' line rendered under the headline."""
+    import datetime
+    parts = []
+    if category:
+        parts.append(html.escape(category.replace("-", " ").title()))
+    parts.append(datetime.datetime.now().strftime("%B %-d, %Y"))
+    text = html.escape(" · ".join(parts))
+    return (
+        '<!-- wp:paragraph {"className":"story-meta"} -->\n'
+        f'<p class="story-meta">{text}</p>\n<!-- /wp:paragraph -->'
+    )
 
-    payload = {"title": headline, "content": body_html, "status": "draft"}
+
+def latest_stories_html():
+    """'Latest stories' box: links to the 3 most recent published posts."""
+    try:
+        resp = requests.get(
+            f"{WP_URL}/wp-json/wp/v2/posts",
+            params={"per_page": 4, "status": "publish", "_fields": "link,title"},
+            timeout=15,
+        )
+        resp.raise_for_status()
+        posts = resp.json()[:3]
+    except Exception as e:
+        print(f"  Latest stories lookup failed, skipping box: {e}")
+        return ""
+    if not posts:
+        return ""
+    items = "\n".join(
+        f'<li><a href="{html.escape(p["link"], quote=True)}">'
+        f'{html.escape(p["title"]["rendered"])}</a></li>'
+        for p in posts
+    )
+    return (
+        '<!-- wp:group {"className":"detail-box","layout":{"type":"constrained"}} -->\n'
+        '<div class="wp-block-group detail-box"><!-- wp:paragraph -->\n'
+        '<p><strong>Latest stories</strong></p>\n<!-- /wp:paragraph -->\n\n'
+        f'<!-- wp:list -->\n<ul>\n{items}\n</ul>\n<!-- /wp:list -->'
+        '\n</div>\n<!-- /wp:group -->'
+    )
+
+
+def post_wordpress_draft(headline, written, source_url, category=None):
+    body_html = (
+        story_meta_html(category)
+        + "\n\n"
+        + build_body_html(written, source_url)
+    )
+    latest = latest_stories_html()
+    if latest:
+        body_html += "\n\n" + latest
+
+    payload = {
+        "title": headline,
+        "content": body_html,
+        "status": "draft",
+        "excerpt": make_excerpt(written),
+    }
     if category:
         cat_id = get_category_id(category)
         if cat_id:
@@ -695,36 +750,100 @@ def post_wordpress_draft(headline, written, source_url, category=None):
     return resp.json()
 
 
-def draft_exists_in_wordpress(headline, source_url):
+_DEDUP_STOPWORDS = {
+    "the", "a", "an", "and", "or", "of", "to", "in", "on", "for", "with",
+    "at", "by", "from", "as", "is", "are", "was", "were", "be", "been",
+    "its", "it", "that", "this", "after", "before", "over", "under",
+    "new", "says", "said", "say", "will", "would", "could", "has", "have",
+}
+
+
+def _stem(word):
+    """Cheap suffix stem: attacker/attacked/attacks -> attack."""
+    for suffix in ("ing", "ed", "es", "s"):
+        if word.endswith(suffix) and len(word) - len(suffix) >= 4:
+            return word[: -len(suffix)]
+    return word
+
+
+def _content_tokens(text):
+    """Stemmed, stopword-free token set for similarity comparisons."""
+    return {
+        _stem(w) for w in re.findall(r"[a-z0-9]+", text.lower())
+        if len(w) > 2 and w not in _DEDUP_STOPWORDS
+    }
+
+
+def _jaccard(a, b):
+    if not a or not b:
+        return 0.0
+    return len(a & b) / len(a | b)
+
+
+# Same-story detection: enough shared stemmed tokens between the new
+# headline+body and an existing post's title+content.
+DUP_MIN_SHARED_TOKENS = 4
+DUP_MIN_CONTAINMENT = 0.25
+
+
+def story_already_covered(headline, body_text, source_url):
     """
-    Check if a draft with this headline already exists in WordPress.
-    Also check if this source URL is already in any draft's content.
-    Returns True if found, False if safe to post.
+    Return a reason string if this story is already on the site, else None.
+
+    Checks recent drafts AND published posts:
+    - exact headline match
+    - source URL already inside a post
+    - headline token similarity (catches AI-reworded headlines)
+    - body token similarity (catches the same story rewritten differently)
     """
     try:
-        # Get all drafts
         resp = requests.get(
             f"{WP_URL}/wp-json/wp/v2/posts",
             auth=(WP_USERNAME, WP_APP_PASSWORD),
-            params={"status": "draft", "per_page": 100},
+            params={"status": "any", "per_page": 50},
             timeout=30,
         )
         resp.raise_for_status()
-        drafts = resp.json()
-        
-        for draft in drafts:
-            # Check if headline matches
-            if draft.get("title", {}).get("rendered", "").strip() == headline.strip():
-                return True
-            # Check if source URL is already in the draft content
-            if source_url in draft.get("content", {}).get("rendered", ""):
-                return True
-        
-        return False
+        posts = resp.json()
+
+        new_tokens = _content_tokens(f"{headline} {body_text}")
+
+        for post in posts:
+            old_title = post.get("title", {}).get("rendered", "")
+            old_content = re.sub(r"<[^>]+>", " ",
+                                 post.get("content", {}).get("rendered", ""))
+
+            if old_title.strip() == headline.strip():
+                return "identical headline"
+            if source_url in post.get("content", {}).get("rendered", ""):
+                return "same source URL"
+
+            old_tokens = _content_tokens(f"{old_title} {old_content}")
+            shared = new_tokens & old_tokens
+            containment = len(shared) / len(new_tokens) if new_tokens else 0
+            if (len(shared) >= DUP_MIN_SHARED_TOKENS
+                    and containment >= DUP_MIN_CONTAINMENT):
+                return (f"likely same story ({len(shared)} shared terms "
+                        f"with '{old_title.strip()}')")
+
+        return None
     except Exception as e:
-        print(f"  Warning: couldn't check WordPress drafts: {e}", file=sys.stderr)
+        print(f"  Warning: couldn't check WordPress posts: {e}", file=sys.stderr)
         # Fail open — if we can't check, don't block posting
-        return False
+        return None
+
+
+def make_excerpt(written):
+    """First usable box line as a plain-text excerpt for homepage cards/RSS."""
+    for key, _label in BOX_ORDER:
+        val = (written.get(key) or "").strip()
+        if not val:
+            continue
+        for line in val.split("\n"):
+            line = line.strip().lstrip("*").strip()
+            if line:
+                return re.split(r"(?<=[.!?])\s+", line)[0]
+    return ""
 
 
 # ---- Step 7: Slack ----
@@ -804,9 +923,10 @@ def main():
                 seen.add(url)
                 continue
 
-            # Check if this story already exists as a draft
-            if draft_exists_in_wordpress(headline, url):
-                print(f"  Skipping, draft already exists: {headline}")
+            # Check if this story is already covered (draft or published)
+            dup_reason = story_already_covered(headline, body_text, url)
+            if dup_reason:
+                print(f"  Skipping, story already covered ({dup_reason}): {headline}")
                 seen.add(url)
                 continue
 
