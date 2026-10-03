@@ -273,7 +273,7 @@ def post_to_wordpress(headline, blocks, source_url, source_name):
             if block["blockName"] == "core/details":
                 summary = block["attrs"].get("summary", "Details")
                 inner_html = block.get("innerHtml", "")
-                content_html += f"<!-- wp:details {{\\"summary\\":\\"{summary}\\"}} --><details><summary>{summary}</summary>{inner_html}</details><!-- /wp:details -->\n"
+                content_html += f'<!-- wp:details {{"summary":"{summary}"}} --><details><summary>{summary}</summary>{inner_html}</details><!-- /wp:details -->\n'
         
         payload = {
             "title": headline,
