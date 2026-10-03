@@ -591,25 +591,34 @@ def source_link_html(url):
     )
 
 
+def _to_sentences(text):
+    """Split plain (non-bullet) box text into individual sentences."""
+    sentences = []
+    for line in text.strip().split('\n'):
+        for sentence in re.split(r"(?<=[.!?])\s+", line.strip()):
+            sentence = sentence.strip()
+            if sentence:
+                sentences.append(sentence)
+    return sentences
+
+
 def build_box_block(label, text):
     """
     Build a detail box. If text contains bullets (lines starting with '* '),
-    render as an HTML list. Otherwise render as a paragraph.
+    or a plain-text box holds 2+ sentences, render as an HTML list --
+    the format rules say 2+ points always become bullets. One sentence
+    stays a paragraph.
     """
     lines = text.strip().split('\n')
     has_bullets = any(line.strip().startswith('* ') for line in lines)
-    
+
     if has_bullets:
-        # Parse bullet points and render as list
-        list_items = []
-        for line in lines:
-            line = line.strip()
-            if line.startswith('* '):
-                # Remove the '* ' prefix and escape
-                item_text = html.escape(line[2:])
-                list_items.append(f'<li>{item_text}</li>')
-        
-        content_html = '\n'.join(list_items)
+        items = [line.strip()[2:] for line in lines if line.strip().startswith('* ')]
+    else:
+        items = _to_sentences(text)
+
+    if len(items) > 1:
+        content_html = '\n'.join(f'<li>{html.escape(item)}</li>' for item in items)
         content_block = (
             f'<!-- wp:list -->\n<ul>\n{content_html}\n</ul>\n<!-- /wp:list -->'
         )
