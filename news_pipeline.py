@@ -604,10 +604,9 @@ def _to_sentences(text):
 
 def build_box_block(label, text):
     """
-    Build a detail box. If text contains bullets (lines starting with '* '),
-    or a plain-text box holds 2+ sentences, render as an HTML list --
-    the format rules say 2+ points always become bullets. One sentence
-    stays a paragraph.
+    Build a detail box. Box content is always rendered as a bullet list:
+    lines starting with '* ' are taken verbatim; plain-text boxes are
+    split into sentences first (even a single sentence gets one bullet).
     """
     lines = text.strip().split('\n')
     has_bullets = any(line.strip().startswith('* ') for line in lines)
@@ -617,15 +616,10 @@ def build_box_block(label, text):
     else:
         items = _to_sentences(text)
 
-    if len(items) > 1:
-        content_html = '\n'.join(f'<li>{html.escape(item)}</li>' for item in items)
-        content_block = (
-            f'<!-- wp:list -->\n<ul>\n{content_html}\n</ul>\n<!-- /wp:list -->'
-        )
-    else:
-        # Plain paragraph
-        text_esc = html.escape(text.strip())
-        content_block = f'<!-- wp:paragraph -->\n<p>{text_esc}</p>\n<!-- /wp:paragraph -->'
+    content_html = '\n'.join(f'<li>{html.escape(item)}</li>' for item in items)
+    content_block = (
+        f'<!-- wp:list -->\n<ul>\n{content_html}\n</ul>\n<!-- /wp:list -->'
+    )
     
     return (
         '<!-- wp:group {"className":"detail-box","layout":{"type":"constrained"}} -->\n'
