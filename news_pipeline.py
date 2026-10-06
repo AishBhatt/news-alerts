@@ -54,7 +54,7 @@ import json
 import time
 import html
 import random
-from datetime import datetime
+from datetime import datetime, timezone
 from itertools import zip_longest
 from urllib.parse import urlparse
 import feedparser
@@ -182,6 +182,9 @@ def get_new_entries(seen):
         links = []
         for entry in parsed.entries:
             link = entry.get("link")
+            stamp = entry.get("published_parsed") or entry.get("updated_parsed")
+            if link and stamp:
+                FEED_DATES[link] = datetime(*stamp[:6], tzinfo=timezone.utc)
             if link and link not in seen and link not in links:
                 links.append((link, category))
         if links:
@@ -219,6 +222,7 @@ def extract_with_beautifulsoup(url):
 def extract_article(url):
     title = ""
     text = ""
+    published = None
     try:
         from newspaper import Article
         article = Article(url)
@@ -226,6 +230,7 @@ def extract_article(url):
         article.parse()
         title = article.title or ""
         text = article.text or ""
+        published = article.publish_date
     except Exception as e:
         print(f"  newspaper failed ({e}), trying BeautifulSoup fallback...")
 
@@ -233,12 +238,19 @@ def extract_article(url):
         print("  newspaper extraction too short, trying BeautifulSoup fallback...")
         text = extract_with_beautifulsoup(url)
 
-    return {"title": title, "text": text, "url": url}
+    published = FEED_DATES.get(url) or published
+    return {"title": title, "text": text, "url": url, "published": published}
 
 
 # ---- Step 3: Claude writing ----
 
-def rewrite_with_claude(article_text, original_title):
+FEED_DATES = {}
+
+
+def _fmt_date(d):
+    return f"{d.strftime('%A')}, {d.strftime('%B')} {d.day}, {d.year}"
+
+def rewrite_with_claude(article_text, original_title, published=None):
     system_prompt = (
         "You are a news writer for PhiNews, producing sharp, at-a-glance news articles for "
         "readers who don't normally read news. Based on the source article text given, write "
@@ -272,12 +284,23 @@ def rewrite_with_claude(article_text, original_title):
         "subject and a finite verb. Never drop auxiliary verbs: write 'Two people "
         "were injured', NOT 'Two people injured'; 'Traffic is now disrupted', NOT "
         "'Traffic now disrupted'. No headline-style fragments.\n"
+        "- Bullets are sentences too: never write a bullet like 'Waits of up to two "
+        "hours.' Write 'Travellers waited up to two hours.'\n"
+        "- Never put two numbers side by side ('90,000 2024 deliveries'). Write "
+        "'Lucid promised 90,000 deliveries for 2024 at its IPO.'\n"
+        "- Keep articles and possessives ('at its IPO', not 'at IPO').\n"
         "- Check subject-verb agreement and tense consistency before finishing.\n\n"
         "when_it_happened — STRICTLY ENFORCED:\n"
         "- Always state the exact calendar date. Include the weekday if you want, "
         "but the date is mandatory: 'Saturday, October 3' or 'October 3, 2026'.\n"
         "- NEVER write a bare weekday or relative term alone ('Saturday', 'yesterday', "
-        "'earlier this week') — a reader weeks later must know exactly when.\n\n"
+        "'earlier this week') — a reader weeks later must know exactly when.\n"
+        "- Resolve relative terms ('yesterday', 'on Sunday') against the ARTICLE "
+        "PUBLISHED date given in the user message. Never use your own sense of the "
+        "current year.\n"
+        "- NEVER invent or estimate a date or year. If the date cannot be worked out "
+        "from the source and the published date, omit when_it_happened entirely. "
+        "The same applies to dates anywhere else in the article.\n\n"
         "WORD LIMIT:\n"
         "- Total article word count: maximum 200 words TOTAL across all boxes (including the headline).\n"
         "- This is strict. Prioritize clarity and key facts over completeness.\n\n"
@@ -301,7 +324,11 @@ def rewrite_with_claude(article_text, original_title):
         '"key_updates": "* Ethiopia accused Eritrea and Sudan of backing armed groups.\\n* All countries denied allegations.\\n* Fighting could disrupt Ethiopia\'s main import route."'
     )
 
+    today = datetime.now(timezone.utc)
+    pub_line = _fmt_date(published) if published else "unknown"
     user_content = (
+        f"ARTICLE PUBLISHED: {pub_line}\n"
+        f"TODAY: {_fmt_date(today)}\n\n"
         f"Original title (for reference only): {original_title}\n\n"
         f"Source article text:\n{article_text[:6000]}"
     )
@@ -334,7 +361,60 @@ def rewrite_with_claude(article_text, original_title):
         parsed = {"headline": original_title, "what_happened": cleaned}
 
     parsed = enforce_sentence_length(parsed)
+    parsed = copyedit_with_claude(parsed)
     return parsed
+
+
+def copyedit_with_claude(written):
+    """Final grammar pass: fixes fragments (often left by the deterministic
+    splitter), stacked numbers and missing articles. Rejected if it breaks
+    the sentence cap or drops boxes."""
+    payload = {
+        "model": CLAUDE_MODEL,
+        "max_tokens": 1000,
+        "system": (
+            "You are the PhiNews copy editor. You get a JSON object of labeled "
+            "news fact boxes. Fix grammar only, keeping every fact and the same "
+            "keys. Rules: every sentence and every '* ' bullet must be a complete "
+            "English sentence with a subject and a finite verb (fix 'Waits of up "
+            "to two hours.' to 'Travellers waited up to two hours.'); active "
+            "voice; never two numbers side by side ('90,000 2024 deliveries' -> "
+            "'90,000 deliveries for 2024'); keep articles ('at its IPO'); correct "
+            "agreement and tense. Each sentence stays 12 words or fewer. Do not "
+            "add, change or remove dates or numbers. Keep '* ' bullet lines and "
+            "the headline unchanged unless ungrammatical. Respond ONLY with the "
+            "JSON object, no markdown fences."
+        ),
+        "messages": [{"role": "user", "content": json.dumps(written, ensure_ascii=False)}],
+    }
+    try:
+        resp = requests.post(
+            CLAUDE_URL,
+            headers={
+                "x-api-key": ANTHROPIC_API_KEY,
+                "anthropic-version": "2023-06-01",
+                "content-type": "application/json",
+            },
+            json=payload,
+            timeout=60,
+        )
+        resp.raise_for_status()
+        raw = resp.json()["content"][0]["text"]
+        edited = json.loads(re.sub(r"```json|```", "", raw).strip())
+    except Exception as e:
+        print(f"[copyedit] failed, keeping draft: {e}")
+        return written
+    if not isinstance(edited, dict) or not edited.get("headline"):
+        return written
+    if any(written.get(k) and not edited.get(k) for k, _ in BOX_ORDER):
+        print("[copyedit] dropped a box, keeping draft")
+        return written
+    if fix_long_sentences(edited):
+        print("[copyedit] broke sentence cap, keeping draft")
+        return written
+    if "who_multiple" in written:
+        edited["who_multiple"] = written["who_multiple"]
+    return edited
 
 
 MAX_SENTENCE_WORDS = 12
@@ -394,7 +474,8 @@ def _repair_with_claude(written):
             "You tighten news copy for PhiNews. You are given a JSON object of "
             "labeled fact boxes. Rewrite EVERY sentence longer than 12 words into "
             "1-3 shorter sentences (max 12 words each, target 10), preserving all "
-            "facts. If a box then contains 2+ sentences, format that box as bullets: "
+            "facts. Every new sentence must be a complete grammatical sentence with "
+            "a subject and a finite verb, never a fragment. If a box then contains 2+ sentences, format that box as bullets: "
             "each bullet on its own line starting with '* '. Keep unchanged boxes "
             "exactly as they are. Respond ONLY with the corrected JSON object, same "
             "keys, no markdown fences."
@@ -1112,7 +1193,7 @@ def main():
                 print(f"  Skipping, article too long ({word_count_estimate:.0f} words estimated, truncating to first 3000 chars)")
                 article["text"] = article["text"][:3000]
 
-            written = rewrite_with_claude(article["text"], article["title"])
+            written = rewrite_with_claude(article["text"], article["title"], article.get("published"))
             headline = title_case(written.get("headline", article["title"]))
             body_text = combined_text(written)
 
